@@ -82,6 +82,12 @@ export const customerService = {
     api.get('/customers/regular'),
   exportCustomerData: (filters = {}) => 
     api.post('/customers/export', filters),
+  getCustomerData: (filters = {}) => 
+    api.get('/demographics/customer-data', { params: filters }),
+  getDemographicsSummary: () => 
+    api.get('/demographics/summary'),
+  exportDemographicsData: (filters = {}) => 
+    api.post('/demographics/export', filters)
 };
 
 // Dashboard/Home API
@@ -94,6 +100,14 @@ export const dashboardService = {
     api.get('/dashboard/quick-actions'),
   getCrowdDensity: () => 
     api.get('/dashboard/crowd-density'),
+};
+
+// New security dashboard service
+export const securityService = {
+  getSecurityStats: () => 
+    api.get('/security/stats'),
+  getIncidentsByType: (incidentType, limit = 10) => 
+    api.get(`/security/incidents/${incidentType}`, { params: { limit } }),
 };
 
 export const incidentService = {

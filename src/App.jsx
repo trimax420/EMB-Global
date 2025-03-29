@@ -8,6 +8,8 @@ import Datacollection from './pages/Datacollection';
 import DailyReport from './pages/DailyReport';
 import AlertsPage from './pages/Alerts';
 import BillingActivityPage from './pages/BillingActivityPage';
+import SecurityDashboard from './pages/SecurityDashboard';
+import CustomerDemographics from './pages/CustomerDemographics';
 
 function App() {
   return (
@@ -20,6 +22,8 @@ function App() {
         <Route path="System-Status" element={<SystemStatus />} />
         <Route path="datacollection" element={<Datacollection />} />
         <Route path="BillingActivityPage" element={<BillingActivityPage />} />
+        <Route path="security-dashboard" element={<SecurityDashboard />} />
+        <Route path="customer-demographics" element={<CustomerDemographics />} />
       </Route>
     </Routes>
   );
