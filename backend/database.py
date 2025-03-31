@@ -64,18 +64,18 @@ class Detection(Base):
     video_id = Column(Integer, ForeignKey("videos.id"))
     timestamp = Column(DateTime, nullable=False, default=datetime.now)
     frame_number = Column(Integer, nullable=False)
-    detection_type = Column(String(50), nullable=False)  # object, face, pose
+    detection_type = Column(String(50), nullable=False)
     confidence = Column(Float, nullable=False)
-    bbox = Column(JSON)  # [x1, y1, x2, y2]
-    keypoints = Column(JSON, nullable=True)  # Pose keypoints if available
-    class_name = Column(String(50))  # person, car, etc.
+    bbox = Column(JSON)
+    class_name = Column(String(50))
     image_path = Column(String(500))
-    detection_metadata = Column(JSON, nullable=True)  # Additional metadata
+    detection_metadata = Column(JSON, nullable=True)
+    camera_id = Column(Integer, nullable=True)
     
-    # New demographics columns
-    gender = Column(String(20), nullable=True)  # male, female, unknown
-    age_group = Column(String(20), nullable=True)  # child, young, adult, senior
-    clothing_color = Column(String(30), nullable=True)
+    # Remove these fields
+    # gender = Column(String(20), nullable=True)
+    # age_group = Column(String(20), nullable=True)
+    # clothing_color = Column(String(30), nullable=True)
 
 class Incident(Base):
     __tablename__ = "incidents"
@@ -361,3 +361,39 @@ async def add_detections_bulk(detections: List[dict]):
     except Exception as e:
         logger.error(f"Error in bulk detection insert: {str(e)}")
         raise 
+
+async def update_incident(incident_id: int, update_data: dict):
+    """Update an existing incident with new information"""
+    async with async_session() as session:
+        try:
+            incident = await session.get(Incident, incident_id)
+            if not incident:
+                logger.error(f"Incident with ID {incident_id} not found")
+                return False
+                
+            # Update incident fields
+            for key, value in update_data.items():
+                if hasattr(incident, key):
+                    setattr(incident, key, value)
+                    
+            # Special handling for detection_ids if it exists
+            if 'detection_ids' in update_data:
+                # If the field already has detection IDs, append new ones
+                if incident.detection_ids:
+                    # Make sure we don't duplicate IDs
+                    existing_ids = incident.detection_ids if isinstance(incident.detection_ids, list) else []
+                    new_ids = update_data['detection_ids']
+                    # Combine existing and new IDs without duplicates
+                    combined_ids = list(set(existing_ids + new_ids))
+                    incident.detection_ids = combined_ids
+                else:
+                    # No existing detection IDs, just set the new ones
+                    incident.detection_ids = update_data['detection_ids']
+            
+            await session.commit()
+            return True
+            
+        except Exception as e:
+            await session.rollback()
+            logger.error(f"Error updating incident: {str(e)}")
+            return False

@@ -1,11 +1,12 @@
 import uvicorn
 import logging
+import traceback
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.api.routes import router as api_router
 from app.core.config import settings
 from database import init_db
-from directory_initializer import ensure_app_directories
+from app.directory_initializer import ensure_app_directories
 
 # Set up logging
 logging.basicConfig(
@@ -46,18 +47,24 @@ app = create_app()
 
 @app.on_event("startup")
 async def startup_event():
+    """Initialize application resources during startup"""
     try:
-        # Ensure all required directories exist
+        # Step 1: Ensure directories exist
         logger.info("Initializing application directories...")
         ensure_app_directories(settings)
         logger.info("Application directories initialized successfully")
         
-        # Initialize database
+        # Step 2: Initialize database
         logger.info("Initializing database...")
         await init_db()
         logger.info("Database initialized successfully")
+        
     except Exception as e:
-        logger.error(f"Error during application startup: {str(e)}")
+        # Detailed error logging
+        error_msg = f"Critical error during startup: {str(e)}"
+        logger.error(error_msg)
+        logger.error(traceback.format_exc())
+        # Re-raise to prevent app from starting with incomplete initialization
         raise
 
 if __name__ == "__main__":
@@ -65,5 +72,8 @@ if __name__ == "__main__":
         "main:app",
         host="0.0.0.0",
         port=8000,
-        reload=True
+        reload=True,
+        # Increase timeout for startup
+        timeout_keep_alive=120,
+        log_level="info"
     )

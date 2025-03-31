@@ -217,228 +217,21 @@ class VideoProcessor:
             logger.error(f"Error processing video: {str(e)}")
             raise
 
-    async def process_face_extraction(self, video_path, save_path, confidence_threshold=0.5):
-        """Extract faces from a video and save them as individual images"""
-        try:
-            logger.info(f"Starting face extraction on {video_path}")
-            
-            if self.face_model is None:
-                raise ValueError("Face detection model not loaded")
-            
-            # Ensure save directory exists
-            os.makedirs(save_path, exist_ok=True)
-            
-            # Open video
-            cap = cv2.VideoCapture(video_path)
-            if not cap.isOpened():
-                raise ValueError(f"Could not open video file: {video_path}")
-            
-            # Get video properties
-            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            
-            frame_count = 0
-            face_count = 0
-            
-            # Process frames
-            while cap.isOpened():
-                ret, frame = cap.read()
-                if not ret:
-                    break
-                
-                # Process every N frames
-                if frame_count % settings.SKIP_FRAMES == 0:
-                    # Detect faces in the frame
-                    device = 0 if torch.cuda.is_available() else 'cpu'
-                    results = self.face_model(frame, conf=confidence_threshold, device=device)
-                    
-                    for result in results:
-                        if hasattr(result, 'boxes') and result.boxes is not None:
-                            boxes = result.boxes.xyxy.cpu().numpy()
-                            confidences = result.boxes.conf.cpu().numpy()
-                            
-                            for box, conf in zip(boxes, confidences):
-                                x1, y1, x2, y2 = map(int, box)
-                                
-                                # Add padding around face
-                                padding = int((x2 - x1) * 0.2)
-                                x1 = max(0, x1 - padding)
-                                y1 = max(0, y1 - padding)
-                                x2 = min(frame.shape[1], x2 + padding)
-                                y2 = min(frame.shape[0], y2 + padding)
-                                
-                                # Extract face ROI
-                                face_roi = frame[y1:y2, x1:x2]
-                                
-                                if face_roi.size == 0:
-                                    continue
-                                
-                                # Save face image
-                                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                                face_path = os.path.join(save_path, f"face_{timestamp}_{face_count}.jpg")
-                                cv2.imwrite(face_path, face_roi)
-                                face_count += 1
-                
-                frame_count += 1
-                
-                # Report progress
-                if frame_count % 100 == 0:
-                    progress = (frame_count / total_frames) * 100
-                    logger.info(f"Face extraction progress: {progress:.1f}%, extracted {face_count} faces")
-            
-            # Release resources
-            cap.release()
-            
-            logger.info(f"Face extraction completed: extracted {face_count} face images")
-            
-            return {
-                "save_path": save_path,
-                "total_faces": face_count,
-                "total_frames_processed": frame_count
-            }
-            
-        except Exception as e:
-            logger.error(f"Error in face extraction: {str(e)}")
-            raise
-
-    async def process_theft_detection(self, video_path, output_path, screenshot_dir, hand_stay_time=2):
-        """Process video for theft detection"""
-        try:
-            logger.info(f"Starting theft detection on {video_path}")
-            
-            if self.pose_model is None:
-                raise ValueError("Pose detection model not loaded")
-            
-            # Ensure output directories exist
-            os.makedirs(os.path.dirname(output_path), exist_ok=True)
-            os.makedirs(screenshot_dir, exist_ok=True)
-            
-            # Open video
-            cap = cv2.VideoCapture(video_path)
-            if not cap.isOpened():
-                raise ValueError(f"Could not open video file: {video_path}")
-            
-            # Get video properties
-            fps = int(cap.get(cv2.CAP_PROP_FPS))
-            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            
-            # Create output video writer
-            fourcc = cv2.VideoWriter_fourcc(*'XVID')
-            out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
-            
-            # Initialize tracking variables
-            hand_timers = {}
-            
-            frame_count = 0
-            theft_detections = []
-            device = 0 if torch.cuda.is_available() else 'cpu'
-            
-            while cap.isOpened():
-                ret, frame = cap.read()
-                if not ret:
-                    break
-                
-                # Process every N frames
-                if frame_count % settings.SKIP_FRAMES == 0:
-                    # Run pose detection
-                    results = self.pose_model(frame, conf=0.5, device=device)
-                    
-                    for result in results:
-                        if hasattr(result, 'keypoints') and result.keypoints is not None:
-                            keypoints = result.keypoints.xy.cpu().numpy()
-                            boxes = result.boxes.xyxy.cpu().numpy()
-                            
-                            for i, box in enumerate(boxes):
-                                x1, y1, x2, y2 = map(int, box)
-                                person_id = f"person_{i}"
-                                
-                                # Draw person bounding box
-                                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                                
-                                # Define chest region
-                                chest_y_top = y1 + int((y2 - y1) * 0.2)
-                                chest_y_bottom = y1 + int((y2 - y1) * 0.4)
-                                chest_box = [x1, chest_y_top, x2, chest_y_bottom]
-                                
-                                # Draw chest region
-                                cv2.rectangle(frame, (chest_box[0], chest_box[1]), (chest_box[2], chest_box[3]), (0, 255, 255), 2)
-                                
-                                # Check if person has keypoints
-                                if i < len(keypoints):
-                                    person_kpts = keypoints[i]
-                                    
-                                    # Get wrist keypoints
-                                    left_wrist = person_kpts[self.LEFT_WRIST] if len(person_kpts) > self.LEFT_WRIST else None
-                                    right_wrist = person_kpts[self.RIGHT_WRIST] if len(person_kpts) > self.RIGHT_WRIST else None
-                                    
-                                    # Check for hand near chest
-                                    for wrist, hand_id in [(left_wrist, f"left_{i}"), (right_wrist, f"right_{i}")]:
-                                        if wrist is not None and wrist[0] > 0 and wrist[1] > 0:
-                                            wrist_x, wrist_y = int(wrist[0]), int(wrist[1])
-                                            
-                                            # Check if wrist is in chest region
-                                            in_chest = (chest_box[0] <= wrist_x <= chest_box[2] and 
-                                                       chest_box[1] <= wrist_y <= chest_box[3])
-                                            
-                                            if in_chest:
-                                                # Start timer for hand in chest
-                                                current_time = time.time()
-                                                if hand_id not in hand_timers:
-                                                    hand_timers[hand_id] = current_time
-                                                elif current_time - hand_timers[hand_id] > hand_stay_time:
-                                                    # Suspiciously long hand stay in chest region
-                                                    cv2.putText(frame, "Suspicious Activity", (x1, y1 - 10),
-                                                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-                                                    
-                                                    # Save a screenshot
-                                                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                                                    ss_path = os.path.join(screenshot_dir, f"theft_{timestamp}_{frame_count}.jpg")
-                                                    cv2.imwrite(ss_path, frame)
-                                                    
-                                                    # Record detection
-                                                    theft_detections.append({
-                                                        "type": "theft",
-                                                        "confidence": 0.8,
-                                                        "bbox": [x1, y1, x2, y2],
-                                                        "frame_number": frame_count,
-                                                        "screenshot": ss_path
-                                                    })
-                                            else:
-                                                # Hand in chest but not long enough yet
-                                                cv2.circle(frame, (wrist_x, wrist_y), 5, (0, 255, 255), -1)
-                                        else:
-                                            # Hand not in chest, reset timer
-                                            if hand_id in hand_timers:
-                                                del hand_timers[hand_id]
-                
-                # Write processed frame
-                out.write(frame)
-                
-                frame_count += 1
-                
-                # Report progress
-                if frame_count % 100 == 0:
-                    progress = (frame_count / total_frames) * 100
-                    logger.info(f"Theft detection progress: {progress:.1f}%")
-            
-            # Release resources
-            cap.release()
-            out.release()
-            
-            return {
-                "output_path": output_path,
-                "screenshot_dir": screenshot_dir,
-                "detections": theft_detections,
-                "total_frames": frame_count
-            }
+    async def process_loitering_detection(self, video_path, output_path, camera_id=None, threshold_time=10):
+        """
+        Process video for loitering detection with improved person re-identification.
+        Saves person ID, image, loitering time, and camera ID to the database.
+        Only one record per person is maintained (updated with the most recent data).
         
-        except Exception as e:
-            logger.error(f"Error in theft detection: {str(e)}")
-            raise
-
-    async def process_loitering_detection(self, video_path, output_path, threshold_time=10):
-        """Process video for loitering detection"""
+        Args:
+            video_path: Path to input video file
+            output_path: Path to save processed video
+            camera_id: ID of the camera feed (if available)
+            threshold_time: Time threshold (in seconds) to consider loitering
+            
+        Returns:
+            Dictionary with processing results
+        """
         try:
             logger.info(f"Starting loitering detection on {video_path}")
             
@@ -448,6 +241,10 @@ class VideoProcessor:
             # Ensure output directory exists
             os.makedirs(os.path.dirname(output_path), exist_ok=True)
             
+            # Create directory for loitering screenshots
+            screenshots_dir = os.path.join(settings.SCREENSHOTS_DIR, f"loitering_{int(time.time())}")
+            os.makedirs(screenshots_dir, exist_ok=True)
+            
             # Open video
             cap = cv2.VideoCapture(video_path)
             if not cap.isOpened():
@@ -463,17 +260,197 @@ class VideoProcessor:
             fourcc = cv2.VideoWriter_fourcc(*'XVID')
             out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
             
-            # Initialize people tracking
-            person_trackers = {}  # {id: {'first_seen': time, 'position': [x, y]}}
-            device = 0 if torch.cuda.is_available() else 'cpu'
+            # Initialize people tracking with persistent features for re-identification
+            person_features = {}  # Dictionary to store person features for re-identification
+            person_trackers = {}  # {person_id: {'first_seen': time, 'position': [x, y], 'accumulated_time': time, 'loitering_detected': bool}}
+            loitering_db_entries = {}  # {person_id: {'db_id': id, 'last_updated': timestamp}}
+            person_last_frame = {}  # Store the last valid frame for each person
+            
+            # Define helper functions
+            def extract_person_features(frame, bbox):
+                """Extract color histogram features from person region"""
+                x1, y1, x2, y2 = map(int, bbox)
+                # Ensure bbox is within frame boundaries
+                x1, y1 = max(0, x1), max(0, y1)
+                x2, y2 = min(frame.shape[1], x2), min(frame.shape[0], y2)
+                
+                if x2 <= x1 or y2 <= y1:
+                    return None  # Invalid bbox
+                    
+                person_roi = frame[y1:y2, x1:x2]
+                # Convert to HSV colorspace for better feature representation
+                hsv_roi = cv2.cvtColor(person_roi, cv2.COLOR_BGR2HSV)
+                # Calculate histogram
+                hist = cv2.calcHist([hsv_roi], [0, 1], None, [16, 16], [0, 180, 0, 256])
+                # Normalize the histogram
+                cv2.normalize(hist, hist, 0, 1, cv2.NORM_MINMAX)
+                return hist.flatten()
+            
+            def match_person(features, existing_features, threshold=0.7):
+                """Match person features against existing person features"""
+                best_match_id = None
+                best_match_score = 0
+                
+                for person_id, person_feat in existing_features.items():
+                    if person_trackers[person_id]['active'] == False:  # Only consider inactive tracks
+                        # Compare histograms using correlation
+                        score = cv2.compareHist(
+                            features.reshape(-1, 1),
+                            person_feat.reshape(-1, 1),
+                            cv2.HISTCMP_CORREL
+                        )
+                        
+                        if score > threshold and score > best_match_score:
+                            best_match_score = score
+                            best_match_id = person_id
+                
+                return best_match_id
+            
+            def get_valid_bbox(position, frame_width, frame_height):
+                """Create a valid bounding box within frame dimensions"""
+                # Create a bounding box centered at the position with reasonable default size
+                box_size = 100  # Default size
+                x1 = max(0, int(position[0] - box_size/2))
+                y1 = max(0, int(position[1] - box_size/2))
+                x2 = min(frame_width, int(position[0] + box_size/2))
+                y2 = min(frame_height, int(position[1] + box_size/2))
+                
+                # Ensure box has minimum size
+                if x2 - x1 < 10:
+                    x2 = min(frame_width, x1 + 10)
+                if y2 - y1 < 10:
+                    y2 = min(frame_height, y1 + 10)
+                    
+                return np.array([x1, y1, x2, y2])
+            
+            # Helper function to save/update loitering person in database
+            async def save_or_update_loitering_person(person_id, bbox, frame, accumulated_time, camera_id):
+                """Save or update loitering person in the database"""
+                if frame is None:
+                    logger.warning(f"Frame is None for person {person_id}, using stored frame if available")
+                    # Try to use a stored frame for this person
+                    if person_id in person_last_frame:
+                        frame = person_last_frame[person_id]
+                    else:
+                        logger.error(f"No stored frame available for person {person_id}, cannot save/update")
+                        return None
+                
+                x1, y1, x2, y2 = map(int, bbox)
+                # Ensure bbox is within frame boundaries
+                frame_height, frame_width = frame.shape[:2]
+                x1, y1 = max(0, x1), max(0, y1)
+                x2, y2 = min(frame_width, x2), min(frame_height, y2)
+                
+                if x2 <= x1 or y2 <= y1:
+                    logger.warning(f"Invalid bounding box for person {person_id}: {bbox}")
+                    return None
+                    
+                current_time = datetime.now()
+                
+                # Create a file path for the person's image
+                person_image_filename = f"loitering_{person_id}_{int(time.time())}.jpg"
+                person_image_path = os.path.join(screenshots_dir, person_image_filename)
+                
+                try:
+                    # Crop and save the person image
+                    person_roi = frame[y1:y2, x1:x2]
+                    cv2.imwrite(person_image_path, person_roi)
+                    
+                    # Format the incident data
+                    incident_data = {
+                        "type": "loitering",
+                        "timestamp": current_time,
+                        "location": f"Camera {camera_id}" if camera_id else "Unknown",
+                        "description": f"Person loitering for {accumulated_time:.1f} seconds",
+                        "image_path": person_image_path,
+                        "video_url": video_path,
+                        "severity": "medium",
+                        "confidence": 0.9,
+                        "duration": accumulated_time,
+                        "is_resolved": False,
+                    }
+                    
+                    # For incident creation or update, also include detection metadata
+                    detection_data = {
+                        "video_id": None,  # Live feed doesn't have a video ID
+                        "camera_id": camera_id,
+                        "timestamp": current_time,
+                        "frame_number": frame_count,
+                        "detection_type": "loitering",
+                        "confidence": 0.9,
+                        "bbox": bbox.tolist(),
+                        "class_name": "person",
+                        "image_path": person_image_path,
+                        "detection_metadata": {
+                            "person_id": person_id,
+                            "accumulated_time": accumulated_time,
+                            "first_detected": person_trackers[person_id]['first_seen'],
+                        }
+                    }
+
+                    try:
+                        from database import add_detection, add_incident, update_incident
+                        
+                        if person_id in loitering_db_entries:
+                            # Update existing entry with latest information
+                            incident_id = loitering_db_entries[person_id]['db_id']
+                            
+                            # Add new detection
+                            detection_id = await add_detection(detection_data)
+                            
+                            # Update incident with latest information
+                            update_data = {
+                                "duration": accumulated_time,
+                                "description": f"Person loitering for {accumulated_time:.1f} seconds",
+                                "image_path": person_image_path,  # Update with latest image
+                                "detection_ids": [detection_id],  # Add new detection ID
+                            }
+                            await update_incident(incident_id, update_data)
+                            
+                            # Update timestamp of last database update
+                            loitering_db_entries[person_id]['last_updated'] = current_time
+                            logger.info(f"Updated loitering record for {person_id} in database")
+                        else:
+                            # Create new detection entry
+                            detection_id = await add_detection(detection_data)
+                            
+                            # Include detection ID in incident
+                            incident_data["detection_ids"] = [detection_id]
+                            
+                            # Create new incident entry
+                            incident_id = await add_incident(incident_data)
+                            
+                            # Record database entry for future updates
+                            loitering_db_entries[person_id] = {
+                                'db_id': incident_id,
+                                'last_updated': current_time
+                            }
+                            logger.info(f"Created new loitering record for {person_id} in database")
+                            
+                        # Return the database record ID
+                        return loitering_db_entries[person_id]['db_id']
+                        
+                    except Exception as e:
+                        logger.error(f"Error saving loitering person to database: {str(e)}")
+                        return None
+                        
+                except Exception as e:
+                    logger.error(f"Error processing person roi: {str(e)}")
+                    return None
             
             frame_count = 0
             loitering_detections = []
+            device = 0 if torch.cuda.is_available() else 'cpu'
+            next_person_id = 1  # Initial ID for new persons
+            last_processed_frame = None  # Keep track of the last successfully processed frame
             
             while cap.isOpened():
                 ret, frame = cap.read()
                 if not ret:
                     break
+                    
+                # Store the last successfully read frame
+                last_processed_frame = frame.copy()
                 
                 # Process every N frames
                 if frame_count % settings.SKIP_FRAMES == 0:
@@ -484,7 +461,7 @@ class VideoProcessor:
                     results = self.object_model(frame, conf=0.5, device=device)
                     
                     # Extract person detections
-                    detections_for_tracker = []
+                    detections = []
                     
                     for result in results:
                         if hasattr(result, 'boxes') and result.boxes is not None:
@@ -497,65 +474,157 @@ class VideoProcessor:
                                 
                                 # Only track people
                                 if class_name == "person" and conf > 0.5:
-                                    x1, y1, x2, y2 = map(int, box)
-                                    width = x2 - x1
-                                    height = y2 - y1
-                                    
-                                    # Add to tracker format: [x, y, width, height]
-                                    detections_for_tracker.append(([x1, y1, width, height], conf, class_name))
+                                    detections.append((box, conf))
                     
-                    # Update tracker
-                    if self.tracker is not None and detections_for_tracker:
-                        tracks = self.tracker.update_tracks(detections_for_tracker, frame=frame)
+                    # Update active flags for all current persons
+                    for person_id in person_trackers:
+                        person_trackers[person_id]['active'] = False
+                    
+                    # Process each detected person
+                    for bbox, conf in detections:
+                        # Extract features for this person
+                        features = extract_person_features(frame, bbox)
+                        if features is None:
+                            continue
+                            
+                        # Try to match with an existing person who is no longer tracked
+                        matched_id = match_person(features, person_features)
                         
-                        for track in tracks:
-                            if not track.is_confirmed():
-                                continue
+                        if matched_id is not None:
+                            # Found a match - resume tracking
+                            person_id = matched_id
+                            # Update features with a moving average for better adaptive matching
+                            person_features[person_id] = 0.7 * person_features[person_id] + 0.3 * features
+                            # Mark as active again and preserve accumulated time
+                            person_trackers[person_id]['active'] = True
+                            logger.info(f"Re-identified person {person_id}")
+                        else:
+                            # New person detected
+                            person_id = f"person_{next_person_id}"
+                            next_person_id += 1
+                            # Store features for future matching
+                            person_features[person_id] = features
+                            # Initialize tracking data
+                            person_trackers[person_id] = {
+                                'first_seen': current_time,
+                                'last_seen': current_time,
+                                'position': [(bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2],
+                                'accumulated_time': 0,
+                                'active': True,
+                                'loitering_detected': False,
+                                'loitering_frame_saved': False,
+                                'db_record_created': False,
+                                'last_db_update_time': 0  # Time threshold for database updates
+                            }
+                            logger.info(f"New person detected: {person_id}")
+                        
+                        # Store the current frame for this person
+                        x1, y1, x2, y2 = map(int, bbox)
+                        if x1 >= 0 and y1 >= 0 and x2 > x1 and y2 > y1 and x2 < frame.shape[1] and y2 < frame.shape[0]:
+                            # Store a copy of the frame with this person
+                            person_frame = frame.copy()
+                            person_last_frame[person_id] = person_frame
+                        
+                        # Update person position and time
+                        person_trackers[person_id]['position'] = [(bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2]
+                        
+                        # Update last seen time for active tracking
+                        person_trackers[person_id]['last_seen'] = current_time
+                        
+                        # Calculate time present (accumulated time)
+                        time_inactive = 0
+                        if 'last_update' in person_trackers[person_id]:
+                            time_inactive = current_time - person_trackers[person_id]['last_update']
+                        
+                        # Add time to accumulated total (but only if not gone for too long)
+                        if time_inactive < 5:  # If person was gone for less than 5 seconds, consider it the same session
+                            person_trackers[person_id]['accumulated_time'] += time_inactive
+                        
+                        person_trackers[person_id]['last_update'] = current_time
+                        
+                        # Check for loitering based on accumulated time
+                        accumulated_time = person_trackers[person_id]['accumulated_time']
+                        
+                        # Draw bounding box and info
+                        if accumulated_time > threshold_time:
+                            # Person has been present too long (loitering)
+                            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
+                            cv2.putText(frame, f"Loitering: {accumulated_time:.1f}s", (x1, y1 - 10),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
                             
-                            track_id = track.track_id
-                            track_bbox = track.to_tlbr()  # [x1, y1, x2, y2]
-                            x1, y1, x2, y2 = map(int, track_bbox)
+                            # Mark as loitering
+                            person_trackers[person_id]['loitering_detected'] = True
                             
-                            # Get center position
-                            center_x = (x1 + x2) / 2
-                            center_y = (y1 + y2) / 2
+                            # Save to database if not already done or if it's been a while since last update
+                            current_real_time = time.time()
+                            db_update_needed = False
                             
-                            # Track person
-                            if track_id not in person_trackers:
-                                person_trackers[track_id] = {
-                                    'first_seen': current_time,
-                                    'position': [center_x, center_y]
+                            if not person_trackers[person_id]['db_record_created']:
+                                # First time detecting loitering for this person
+                                db_update_needed = True
+                                person_trackers[person_id]['db_record_created'] = True
+                            elif current_real_time - person_trackers[person_id].get('last_db_update_time', 0) > 30:
+                                # Update database every 30 seconds if person continues loitering
+                                db_update_needed = True
+                            
+                            if db_update_needed:
+                                # Save/update in database
+                                await save_or_update_loitering_person(
+                                    person_id, 
+                                    bbox, 
+                                    frame, 
+                                    accumulated_time, 
+                                    camera_id
+                                )
+                                person_trackers[person_id]['last_db_update_time'] = current_real_time
+                            
+                            # Capture one frame per loitering person if not already saved (for local records)
+                            if not person_trackers[person_id]['loitering_frame_saved']:
+                                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                                screenshot_path = os.path.join(screenshots_dir, f"loitering_{person_id}_{timestamp}.jpg")
+                                cv2.imwrite(screenshot_path, frame)
+                                
+                                # Record loitering detection once per person (for function return value)
+                                loitering_detection = {
+                                    "type": "loitering",
+                                    "person_id": person_id,
+                                    "confidence": 0.9,
+                                    "bbox": bbox.tolist(),
+                                    "time_present": accumulated_time,
+                                    "frame_number": frame_count,
+                                    "screenshot_path": screenshot_path,
+                                    "camera_id": camera_id
                                 }
+                                loitering_detections.append(loitering_detection)
+                                
+                                # Mark that we've saved a frame for this person
+                                person_trackers[person_id]['loitering_frame_saved'] = True
+                                logger.info(f"Loitering detected for {person_id}, time: {accumulated_time:.1f}s")
+                        else:
+                            # Normal tracking
+                            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                            cv2.putText(frame, f"{person_id}: {accumulated_time:.1f}s", (x1, y1 - 10),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                
+                    # Clean up old inactive tracks after a certain time to avoid memory issues
+                    current_ids = list(person_trackers.keys())
+                    for person_id in current_ids:
+                        if (not person_trackers[person_id]['active'] and 
+                            current_time - person_trackers[person_id]['last_seen'] > 60):  # Remove after 60 seconds inactive
+                            # Keep the feature for re-identification but remove from active tracking
+                            # This is a balance - keeping all features forever would be memory intensive
+                            # So we keep them for recent individuals who might return
+                            if person_trackers[person_id].get('loitering_detected', False):
+                                # Keep features longer for people who were loitering
+                                pass  # Don't remove them
                             else:
-                                # Calculate time present
-                                time_present = current_time - person_trackers[track_id]['first_seen']
-                                
-                                # Update position
-                                person_trackers[track_id]['position'] = [center_x, center_y]
-                                
-                                # Check for loitering
-                                if time_present > threshold_time:
-                                    # Person has been present too long
-                                    cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
-                                    cv2.putText(frame, f"Loitering: {time_present:.1f}s", (x1, y1 - 10),
-                                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-                                    
-                                    # Add loitering detection (once per 2 seconds)
-                                    if int(time_present) % 2 == 0 and int(time_present) != int(time_present - 1):
-                                        loitering_detection = {
-                                            "type": "loitering",
-                                            "track_id": track_id,
-                                            "confidence": 0.9,
-                                            "bbox": [x1, y1, x2, y2],
-                                            "time_present": time_present,
-                                            "frame_number": frame_count
-                                        }
-                                        loitering_detections.append(loitering_detection)
-                                else:
-                                    # Normal tracking
-                                    cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                                    cv2.putText(frame, f"Person {track_id}: {time_present:.1f}s", (x1, y1 - 10),
-                                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                                # For non-loitering people, we can remove them from memory after a while
+                                if current_time - person_trackers[person_id]['last_seen'] > 300:  # 5 minutes
+                                    if person_id in person_features:
+                                        del person_features[person_id]
+                                    if person_id in person_last_frame:
+                                        del person_last_frame[person_id]
+                                    del person_trackers[person_id]
                 
                 # Write processed frame
                 out.write(frame)
@@ -571,14 +640,47 @@ class VideoProcessor:
             cap.release()
             out.release()
             
+            # Add final database updates for all loitering people
+            try:
+                for person_id, tracker in person_trackers.items():
+                    if tracker.get('loitering_detected', False) and tracker.get('active', False):
+                        # Get the last known position for this person
+                        if person_id in person_last_frame:
+                            frame = person_last_frame[person_id]
+                            frame_height, frame_width = frame.shape[:2]
+                            position = tracker['position']
+                            
+                            # Generate a valid bounding box
+                            last_bbox = get_valid_bbox(position, frame_width, frame_height)
+                            
+                            try:
+                                await save_or_update_loitering_person(
+                                    person_id,
+                                    last_bbox,
+                                    frame,
+                                    tracker['accumulated_time'],
+                                    camera_id
+                                )
+                                logger.info(f"Final update for loitering person {person_id}")
+                            except Exception as e:
+                                logger.error(f"Error in final update for person {person_id}: {str(e)}")
+            except Exception as e:
+                logger.error(f"Error in final database updates: {str(e)}")
+            
             return {
                 "output_path": output_path,
+                "screenshots_dir": screenshots_dir,
                 "detections": loitering_detections,
-                "total_frames": frame_count
+                "total_frames": frame_count,
+                "unique_persons": next_person_id - 1,
+                "loitering_persons": [
+                    {"person_id": p_id, "time": tracker['accumulated_time']}
+                    for p_id, tracker in person_trackers.items()
+                    if tracker.get('loitering_detected', False)
+                ]
             }
             
         except Exception as e:
             logger.error(f"Error in loitering detection: {str(e)}")
             raise
-
 video_processor = VideoProcessor()
