@@ -12,6 +12,7 @@ import cv2
 import base64
 import asyncio
 import time
+import os
 
 from ..core.config import settings
 from ..core.websocket import manager
@@ -29,13 +30,28 @@ from database import (
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-# Mount static directories
-router.mount("/uploads", StaticFiles(directory=str(settings.UPLOAD_DIR)), name="uploads")
-router.mount("/processed", StaticFiles(directory=str(settings.PROCESSED_DIR)), name="processed")
-router.mount("/frames", StaticFiles(directory=str(settings.FRAMES_DIR)), name="frames")
-router.mount("/alerts", StaticFiles(directory=str(settings.ALERTS_DIR)), name="alerts")
-router.mount("/thumbnails", StaticFiles(directory=str(settings.THUMBNAILS_DIR)), name="thumbnails")
+# Ensure all directories exist before mounting them
+for directory in [
+    settings.UPLOAD_DIR,
+    settings.PROCESSED_DIR,
+    settings.FRAMES_DIR,
+    settings.ALERTS_DIR,
+    settings.THUMBNAILS_DIR
+]:
+    os.makedirs(directory, exist_ok=True)
+    logger.info(f"Ensured directory exists: {directory}")
 
+# Mount static directories with error handling
+try:
+    router.mount("/uploads", StaticFiles(directory=str(settings.UPLOAD_DIR)), name="uploads")
+    router.mount("/processed", StaticFiles(directory=str(settings.PROCESSED_DIR)), name="processed")
+    router.mount("/frames", StaticFiles(directory=str(settings.FRAMES_DIR)), name="frames")
+    router.mount("/alerts", StaticFiles(directory=str(settings.ALERTS_DIR)), name="alerts")
+    router.mount("/thumbnails", StaticFiles(directory=str(settings.THUMBNAILS_DIR)), name="thumbnails")
+    logger.info("Static directories mounted successfully")
+except Exception as e:
+    logger.error(f"Error mounting static directories: {str(e)}")
+    
 @router.get("/")
 async def root():
     return {"message": "Security Dashboard API is running"}

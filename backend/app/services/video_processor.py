@@ -6,13 +6,12 @@ import torch
 import asyncio
 import logging
 import time
+import json
 from pathlib import Path
 from datetime import datetime
 from typing import List, Dict, Optional, Tuple
 from ..core.config import settings
 from ..core.websocket import manager
-from ..models.schemas import DetectionInfo, IncidentInfo
-import json
 
 logger = logging.getLogger(__name__)
 
@@ -21,59 +20,41 @@ class VideoProcessor:
         self.face_model = None
         self.pose_model = None
         self.object_model = None
-        self.face_extraction_model = None
-        self.loitering_model = None
-        self.theft_model = None
         self._initialize_models()
         
-        # Initialize tracking dictionaries for theft detection
-        self.hand_timers = {}
-        self.previous_hand_positions = {}
-        
-        # COCO Pose Keypoints indices
+        # COCO Pose Keypoints indices for reference
         self.LEFT_WRIST = 9
         self.RIGHT_WRIST = 10
         self.LEFT_SHOULDER = 5
         self.RIGHT_SHOULDER = 6
-        self.NOSE = 0  # Used for front/back detection
+        self.NOSE = 0
         
-        # Initialize DeepSort tracker if available
+        # Initialize tracker if available
         self.tracker = None
         try:
             from deep_sort_realtime.deepsort_tracker import DeepSort
-            self.tracker = DeepSort(max_age=30, nn_budget=100, override_track_class=None)
-            logger.info("DeepSort tracker initialized successfully")
+            self.tracker = DeepSort(max_age=30, nn_budget=100)
+            logger.info("DeepSort tracker initialized")
         except ImportError:
-            logger.warning("DeepSort not installed. Person tracking will be limited.")
+            logger.warning("DeepSort not installed. Object tracking will be limited.")
 
     def _initialize_models(self):
-        """Initialize all required models"""
+        """Initialize required models"""
         try:
             from ultralytics import YOLO
             
+            # Initialize models if path exists
             if settings.FACE_MODEL_PATH.exists():
-                self.face_model = YOLO(str(settings.FACE_MODEL_PATH), task='detect')
+                self.face_model = YOLO(str(settings.FACE_MODEL_PATH))
                 logger.info("Face detection model loaded successfully")
             
             if settings.POSE_MODEL_PATH.exists():
-                self.pose_model = YOLO(str(settings.POSE_MODEL_PATH), task='detect')
+                self.pose_model = YOLO(str(settings.POSE_MODEL_PATH))
                 logger.info("Pose detection model loaded successfully")
             
             if settings.OBJECT_MODEL_PATH.exists():
-                self.object_model = YOLO(str(settings.OBJECT_MODEL_PATH), task='detect')
+                self.object_model = YOLO(str(settings.OBJECT_MODEL_PATH))
                 logger.info("Object detection model loaded successfully")
-            
-            if settings.FACE_EXTRACTION_MODEL_PATH.exists():
-                self.face_extraction_model = YOLO(str(settings.FACE_EXTRACTION_MODEL_PATH))
-                logger.info("Face extraction model loaded successfully")
-            
-            if settings.LOITERING_MODEL_PATH.exists():
-                self.loitering_model = YOLO(str(settings.LOITERING_MODEL_PATH))
-                logger.info("Loitering detection model loaded successfully")
-            
-            if settings.THEFT_MODEL_PATH.exists():
-                self.theft_model = YOLO(str(settings.THEFT_MODEL_PATH))
-                logger.info("Theft detection model loaded successfully")
                 
         except Exception as e:
             logger.error(f"Error initializing models: {str(e)}")
@@ -84,17 +65,14 @@ class VideoProcessor:
         detections = []
         
         try:
+            # Select appropriate device
+            device = 0 if torch.cuda.is_available() else 'cpu'
+            
             # Convert frame to RGB for YOLO
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             
-            # Convert to CUDA tensor for faster processing
-            if torch.cuda.is_available():
-                frame_tensor = torch.from_numpy(frame_rgb).cuda()
-            else:
-                frame_tensor = torch.from_numpy(frame_rgb)
-            
             if detection_type in ["all", "face"] and self.face_model:
-                face_results = self.face_model(frame_rgb, conf=0.5, device=0)
+                face_results = self.face_model(frame_rgb, conf=0.5, device=device)
                 for result in face_results:
                     boxes = result.boxes.xyxy.cpu().numpy()
                     confidences = result.boxes.conf.cpu().numpy()
@@ -107,7 +85,7 @@ class VideoProcessor:
                         })
             
             if detection_type in ["all", "object"] and self.object_model:
-                object_results = self.object_model(frame_rgb, conf=0.5, device=0)
+                object_results = self.object_model(frame_rgb, conf=0.5, device=device)
                 for result in object_results:
                     boxes = result.boxes.xyxy.cpu().numpy()
                     confidences = result.boxes.conf.cpu().numpy()
@@ -121,274 +99,486 @@ class VideoProcessor:
                             "class_name": class_name
                         })
             
+            if detection_type in ["all", "pose"] and self.pose_model:
+                pose_results = self.pose_model(frame_rgb, conf=0.5, device=device)
+                for result in pose_results:
+                    if hasattr(result, 'keypoints') and result.keypoints is not None:
+                        keypoints = result.keypoints.xy.cpu().numpy()
+                        boxes = result.boxes.xyxy.cpu().numpy()
+                        confidences = result.boxes.conf.cpu().numpy()
+                        
+                        for i in range(len(boxes)):
+                            bbox = boxes[i].tolist()
+                            conf = float(confidences[i])
+                            kpts = keypoints[i].tolist() if i < len(keypoints) else []
+                            
+                            detections.append({
+                                "type": "pose",
+                                "confidence": conf,
+                                "bbox": bbox,
+                                "class_name": "person",
+                                "keypoints": kpts
+                            })
+            
             return detections
             
         except Exception as e:
             logger.error(f"Error processing frame: {str(e)}")
             return []
 
-    def draw_skeleton(self, frame, keypoints, color=(0, 255, 0), thickness=2):
-        """
-        Draw a skeleton on the frame based on keypoints.
-        """
-        connections = [
-            (0, 1), (0, 2), (1, 3), (2, 4),  # Head and shoulders
-            (5, 6), (5, 7), (6, 8),          # Torso and arms
-            (7, 9), (8, 10),                 # Arms
-            (5, 11), (6, 12),                # Torso to legs
-            (11, 12),                        # Hips
-            (11, 13), (12, 14),              # Legs
-            (13, 15), (14, 16)               # Ankles
-        ]
-        
-        for keypoint in keypoints:
-            if keypoint[0] > 0 and keypoint[1] > 0:  # Only draw visible keypoints
-                x, y = int(keypoint[0]), int(keypoint[1])
-                cv2.circle(frame, (x, y), radius=5, color=color, thickness=-1)
-                
-        for connection in connections:
-            idx1, idx2 = connection
-            if (idx1 < len(keypoints) and idx2 < len(keypoints) and 
-                keypoints[idx1][0] > 0 and keypoints[idx1][1] > 0 and 
-                keypoints[idx2][0] > 0 and keypoints[idx2][1] > 0):
-                pt1 = tuple(map(int, keypoints[idx1][:2]))
-                pt2 = tuple(map(int, keypoints[idx2][:2]))
-                cv2.line(frame, pt1, pt2, color, thickness)
-    
-    def approximate_eye_gaze(self, nose, chest_box):
-        """
-        Approximate whether the person is looking at their chest region using the nose keypoint.
-        """
-        if nose is None or nose[0] <= 0 or nose[1] <= 0:
-            return False
-        nose_x, nose_y = int(nose[0]), int(nose[1])
-        return (chest_box[0] < nose_x < chest_box[2]) and (chest_box[1] < nose_y < chest_box[3])
-
-    def is_intersecting(self, box1, box2):
-        """Check if two bounding boxes intersect"""
-        return not (box1[2] < box2[0] or box1[0] > box2[2] or box1[3] < box2[1] or box1[1] > box2[3])
-    
-    async def detect_theft(self, frame: np.ndarray, frame_count: int, video_id: int) -> Tuple[np.ndarray, List[Dict]]:
-        """
-        Detect potential theft activities in the frame
-        Returns: Modified frame with annotations and list of theft detections
-        """
-        theft_detections = []
-        frame_height, frame_width = frame.shape[:2]
-        
+    async def process_video(self, video_path: str, video_id: int, detection_type: str) -> Dict:
+        """Process video and return detections"""
         try:
-            if self.theft_model is None:
-                logger.warning("Theft detection model not loaded")
-                return frame, []
+            # Ensure directories exist
+            os.makedirs(settings.PROCESSED_DIR, exist_ok=True)
+            os.makedirs(settings.THUMBNAILS_DIR, exist_ok=True)
             
-            # Run pose estimation
-            pose_results = self.theft_model(frame)
-            
-            detections_for_tracker = []
-            
-            for result in pose_results:
-                keypoints = result.keypoints.xy.cpu().numpy() if hasattr(result, 'keypoints') and result.keypoints is not None else []
-                boxes = result.boxes.xyxy.cpu().numpy() if hasattr(result, 'boxes') and result.boxes is not None else []
-                
-                for i in range(len(boxes)):
-                    x1, y1, x2, y2 = map(int, boxes[i])
-                    width, height = x2 - x1, y2 - y1
-                    
-                    # Add detection to tracker if available
-                    person_box = [x1, y1, x2 - x1, y2 - y1]  # Format: [x, y, width, height]
-                    detections_for_tracker.append((person_box, 1.0, "person"))
-                    
-                    if len(keypoints) <= i:
-                        continue
-                    
-                    person_keypoints = keypoints[i]
-                    
-                    # Define chest and waist bounding boxes for theft detection zones
-                    chest_box = [x1 + int(0.1 * width), y1, x2 - int(0.1 * width), y1 + int(0.4 * height)]
-                    left_waist_box = [x1, y1 + int(0.5 * height), x1 + int(0.5 * width), y2]
-                    right_waist_box = [x1 + int(0.5 * width), y1 + int(0.5 * height), x2, y2]
-                    
-                    # Draw detection zones
-                    cv2.rectangle(frame, tuple(chest_box[:2]), tuple(chest_box[2:]), (0, 255, 255), 2)
-                    cv2.rectangle(frame, tuple(left_waist_box[:2]), tuple(left_waist_box[2:]), (255, 0, 0), 2)
-                    cv2.rectangle(frame, tuple(right_waist_box[:2]), tuple(right_waist_box[2:]), (0, 0, 255), 2)
-                    
-                    # Draw skeleton
-                    self.draw_skeleton(frame, person_keypoints)
-                    
-                    # Get wrist and nose positions
-                    left_wrist = person_keypoints[self.LEFT_WRIST] if len(person_keypoints) > self.LEFT_WRIST and person_keypoints[self.LEFT_WRIST][0] > 0 else None
-                    right_wrist = person_keypoints[self.RIGHT_WRIST] if len(person_keypoints) > self.RIGHT_WRIST and person_keypoints[self.RIGHT_WRIST][0] > 0 else None
-                    nose = person_keypoints[self.NOSE] if len(person_keypoints) > self.NOSE and person_keypoints[self.NOSE][0] > 0 else None
-                    
-                    # Approximate eye gaze direction
-                    is_looking_at_chest = self.approximate_eye_gaze(nose, chest_box)
-                    
-                    # Track hands in suspicious regions (chest/waist)
-                    for wrist, label in [(left_wrist, f"left_{i}"), (right_wrist, f"right_{i}")]:
-                        if wrist is None:
-                            continue
-                        
-                        wrist_x, wrist_y = int(wrist[0]), int(wrist[1])
-                        wrist_box = [wrist_x - 10, wrist_y - 10, wrist_x + 10, wrist_y + 10]
-                        cv2.rectangle(frame, (wrist_box[0], wrist_box[1]), (wrist_box[2], wrist_box[3]), (0, 255, 0), 2)
-                        
-                        in_chest = self.is_intersecting(wrist_box, chest_box)
-                        in_left_waist = self.is_intersecting(wrist_box, left_waist_box)
-                        in_right_waist = self.is_intersecting(wrist_box, right_waist_box)
-                        
-                        # Suspicious behavior detection
-                        hand_stay_time = settings.HAND_STAY_TIME_WAIST if in_left_waist or in_right_waist else settings.HAND_STAY_TIME_CHEST
-                        
-                        if in_chest or in_left_waist or in_right_waist:
-                            current_time = time.time()
-                            if label not in self.hand_timers:
-                                self.hand_timers[label] = current_time
-                            elif current_time - self.hand_timers[label] > hand_stay_time:
-                                if not is_looking_at_chest:  # Increase suspicion if not looking at chest
-                                    cv2.putText(frame, "⚠️ Shoplifter!", (x1, y1 - 10),
-                                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-                                    
-                                    # Crop the suspect with padding
-                                    x1_crop = max(0, x1 - settings.CROP_PADDING)
-                                    y1_crop = max(0, y1 - settings.CROP_PADDING)
-                                    x2_crop = min(frame_width, x2 + settings.CROP_PADDING)
-                                    y2_crop = min(frame_height, y2 + settings.CROP_PADDING)
-                                    suspect_crop = frame[y1_crop:y2_crop, x1_crop:x2_crop]
-                                    
-                                    # Save screenshot
-                                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                                    screenshot_path = settings.SCREENSHOTS_DIR / f"theft_{video_id}_{timestamp}_{frame_count}.jpg"
-                                    os.makedirs(settings.SCREENSHOTS_DIR, exist_ok=True)
-                                    cv2.imwrite(str(screenshot_path), suspect_crop)
-                                    
-                                    # Add to detections
-                                    theft_detections.append({
-                                        "type": "theft",
-                                        "confidence": 0.85,  # Confidence score for theft detection
-                                        "bbox": [x1, y1, x2, y2],
-                                        "screenshot": str(screenshot_path),
-                                        "frame_number": frame_count,
-                                        "timestamp": timestamp
-                                    })
-                            
-                            self.previous_hand_positions[label] = (in_chest, in_left_waist, in_right_waist)
-                        else:
-                            self.hand_timers.pop(label, None)
-            
-            # Update tracker if available
-            if self.tracker is not None and detections_for_tracker:
-                tracks = self.tracker.update_tracks(detections_for_tracker, frame=frame)
-                
-                for track in tracks:
-                    if not track.is_confirmed():
-                        continue
-                    
-                    track_id = track.track_id
-                    bbox = track.to_tlbr()  # Get bounding box in [x1, y1, x2, y2] format
-                    x1, y1, x2, y2 = map(int, bbox)
-                    
-                    # Display person ID
-                    cv2.putText(frame, f"ID: {track_id}", (x1, y1 - 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-            
-            return frame, theft_detections
-            
-        except Exception as e:
-            logger.error(f"Error in theft detection: {str(e)}")
-            return frame, []
-
-    async def process_video(self, video_path: str, video_id: int, detection_type: str) -> None:
-        """Process video and store detections"""
-        try:
+            # Open video
             cap = cv2.VideoCapture(video_path)
+            if not cap.isOpened():
+                raise ValueError(f"Could not open video: {video_path}")
+                
+            # Get video properties
             fps = int(cap.get(cv2.CAP_PROP_FPS))
-            frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
             width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
             height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
             
             # Create output video writer
             output_path = settings.PROCESSED_DIR / f"processed_{video_id}.mp4"
             fourcc = cv2.VideoWriter_fourcc(*'XVID')
             out = cv2.VideoWriter(str(output_path), fourcc, fps, (width, height))
             
+            # Process frames
             frame_number = 0
             detections = []
-            theft_incidents = []
-            
-            # Create directories if they don't exist
-            os.makedirs(settings.PROCESSED_DIR, exist_ok=True)
-            os.makedirs(settings.SCREENSHOTS_DIR, exist_ok=True)
-            os.makedirs(settings.THUMBNAILS_DIR, exist_ok=True)
+            thumbnail_saved = False
             
             while cap.isOpened():
                 ret, frame = cap.read()
                 if not ret:
                     break
                 
-                # Process every Nth frame based on settings
+                # Process every Nth frame to improve performance
                 if frame_number % settings.SKIP_FRAMES == 0:
-                    # Regular object/face detection
-                    if detection_type in ["all", "face", "object"]:
-                        frame_detections = await self.process_frame(frame, detection_type)
-                        detections.extend(frame_detections)
-                        
-                        # Draw detections on frame
-                        for det in frame_detections:
-                            x1, y1, x2, y2 = map(int, det["bbox"])
-                            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                            label = f"{det['class_name']} {det['confidence']:.2f}"
-                            cv2.putText(frame, label, (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                    # Get detections for the current frame
+                    frame_detections = await self.process_frame(frame, detection_type)
                     
-                    # Theft detection
-                    if detection_type in ["all", "theft"] and self.theft_model:
-                        frame, theft_detections = await self.detect_theft(frame, frame_number, video_id)
-                        
-                        if theft_detections:
-                            theft_incidents.extend(theft_detections)
-                            
-                            # Send real-time alert via websocket
-                            for theft in theft_detections:
-                                await manager.broadcast(json.dumps({
-                                    "type": "theft_alert",
-                                    "video_id": video_id,
-                                    "frame": frame_number,
-                                    "bbox": theft["bbox"],
-                                    "screenshot": theft["screenshot"],
-                                    "timestamp": theft["timestamp"]
-                                }))
+                    # Add frame number to detections
+                    for det in frame_detections:
+                        det["frame_number"] = frame_number
+                        detections.append(det)
+                    
+                    # Draw detections on frame
+                    for det in frame_detections:
+                        x1, y1, x2, y2 = map(int, det["bbox"])
+                        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                        label = f"{det['class_name']} {det['confidence']:.2f}"
+                        cv2.putText(frame, label, (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                    
+                    # Save thumbnail if not yet saved
+                    if not thumbnail_saved:
+                        thumbnail_path = settings.THUMBNAILS_DIR / f"thumb_{video_id}.jpg"
+                        cv2.imwrite(str(thumbnail_path), frame)
+                        thumbnail_saved = True
                 
                 # Write processed frame
                 out.write(frame)
                 frame_number += 1
                 
-                # Update progress
-                if frame_number % 10 == 0:  # Update every 10 frames to reduce overhead
-                    progress = (frame_number / frame_count) * 100
+                # Report progress periodically
+                if frame_number % 30 == 0:  # Update every 30 frames
+                    progress = (frame_number / total_frames) * 100
                     await manager.broadcast(json.dumps({
                         "type": "processing_progress",
                         "video_id": video_id,
                         "progress": progress
                     }))
             
+            # Release resources
             cap.release()
             out.release()
             
-            # Generate thumbnail (using the last frame)
-            thumbnail_path = settings.THUMBNAILS_DIR / f"thumb_{video_id}.jpg"
-            cv2.imwrite(str(thumbnail_path), frame)
-            
-            # Combine all detections
-            all_detections = detections + theft_incidents
+            # If we didn't save a thumbnail yet, use the last frame
+            if not thumbnail_saved and frame is not None:
+                thumbnail_path = settings.THUMBNAILS_DIR / f"thumb_{video_id}.jpg"
+                cv2.imwrite(str(thumbnail_path), frame)
             
             return {
                 "output_path": str(output_path),
-                "thumbnail_path": str(thumbnail_path),
-                "detections": all_detections,
-                "theft_incidents": theft_incidents
+                "thumbnail_path": str(thumbnail_path) if thumbnail_saved else None,
+                "detections": detections,
+                "total_frames": frame_number,
+                "fps": fps,
+                "resolution": f"{width}x{height}"
             }
             
         except Exception as e:
             logger.error(f"Error processing video: {str(e)}")
+            raise
+
+    async def process_face_extraction(self, video_path, save_path, confidence_threshold=0.5):
+        """Extract faces from a video and save them as individual images"""
+        try:
+            logger.info(f"Starting face extraction on {video_path}")
+            
+            if self.face_model is None:
+                raise ValueError("Face detection model not loaded")
+            
+            # Ensure save directory exists
+            os.makedirs(save_path, exist_ok=True)
+            
+            # Open video
+            cap = cv2.VideoCapture(video_path)
+            if not cap.isOpened():
+                raise ValueError(f"Could not open video file: {video_path}")
+            
+            # Get video properties
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            
+            frame_count = 0
+            face_count = 0
+            
+            # Process frames
+            while cap.isOpened():
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                
+                # Process every N frames
+                if frame_count % settings.SKIP_FRAMES == 0:
+                    # Detect faces in the frame
+                    device = 0 if torch.cuda.is_available() else 'cpu'
+                    results = self.face_model(frame, conf=confidence_threshold, device=device)
+                    
+                    for result in results:
+                        if hasattr(result, 'boxes') and result.boxes is not None:
+                            boxes = result.boxes.xyxy.cpu().numpy()
+                            confidences = result.boxes.conf.cpu().numpy()
+                            
+                            for box, conf in zip(boxes, confidences):
+                                x1, y1, x2, y2 = map(int, box)
+                                
+                                # Add padding around face
+                                padding = int((x2 - x1) * 0.2)
+                                x1 = max(0, x1 - padding)
+                                y1 = max(0, y1 - padding)
+                                x2 = min(frame.shape[1], x2 + padding)
+                                y2 = min(frame.shape[0], y2 + padding)
+                                
+                                # Extract face ROI
+                                face_roi = frame[y1:y2, x1:x2]
+                                
+                                if face_roi.size == 0:
+                                    continue
+                                
+                                # Save face image
+                                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                                face_path = os.path.join(save_path, f"face_{timestamp}_{face_count}.jpg")
+                                cv2.imwrite(face_path, face_roi)
+                                face_count += 1
+                
+                frame_count += 1
+                
+                # Report progress
+                if frame_count % 100 == 0:
+                    progress = (frame_count / total_frames) * 100
+                    logger.info(f"Face extraction progress: {progress:.1f}%, extracted {face_count} faces")
+            
+            # Release resources
+            cap.release()
+            
+            logger.info(f"Face extraction completed: extracted {face_count} face images")
+            
+            return {
+                "save_path": save_path,
+                "total_faces": face_count,
+                "total_frames_processed": frame_count
+            }
+            
+        except Exception as e:
+            logger.error(f"Error in face extraction: {str(e)}")
+            raise
+
+    async def process_theft_detection(self, video_path, output_path, screenshot_dir, hand_stay_time=2):
+        """Process video for theft detection"""
+        try:
+            logger.info(f"Starting theft detection on {video_path}")
+            
+            if self.pose_model is None:
+                raise ValueError("Pose detection model not loaded")
+            
+            # Ensure output directories exist
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+            os.makedirs(screenshot_dir, exist_ok=True)
+            
+            # Open video
+            cap = cv2.VideoCapture(video_path)
+            if not cap.isOpened():
+                raise ValueError(f"Could not open video file: {video_path}")
+            
+            # Get video properties
+            fps = int(cap.get(cv2.CAP_PROP_FPS))
+            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            
+            # Create output video writer
+            fourcc = cv2.VideoWriter_fourcc(*'XVID')
+            out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+            
+            # Initialize tracking variables
+            hand_timers = {}
+            
+            frame_count = 0
+            theft_detections = []
+            device = 0 if torch.cuda.is_available() else 'cpu'
+            
+            while cap.isOpened():
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                
+                # Process every N frames
+                if frame_count % settings.SKIP_FRAMES == 0:
+                    # Run pose detection
+                    results = self.pose_model(frame, conf=0.5, device=device)
+                    
+                    for result in results:
+                        if hasattr(result, 'keypoints') and result.keypoints is not None:
+                            keypoints = result.keypoints.xy.cpu().numpy()
+                            boxes = result.boxes.xyxy.cpu().numpy()
+                            
+                            for i, box in enumerate(boxes):
+                                x1, y1, x2, y2 = map(int, box)
+                                person_id = f"person_{i}"
+                                
+                                # Draw person bounding box
+                                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                                
+                                # Define chest region
+                                chest_y_top = y1 + int((y2 - y1) * 0.2)
+                                chest_y_bottom = y1 + int((y2 - y1) * 0.4)
+                                chest_box = [x1, chest_y_top, x2, chest_y_bottom]
+                                
+                                # Draw chest region
+                                cv2.rectangle(frame, (chest_box[0], chest_box[1]), (chest_box[2], chest_box[3]), (0, 255, 255), 2)
+                                
+                                # Check if person has keypoints
+                                if i < len(keypoints):
+                                    person_kpts = keypoints[i]
+                                    
+                                    # Get wrist keypoints
+                                    left_wrist = person_kpts[self.LEFT_WRIST] if len(person_kpts) > self.LEFT_WRIST else None
+                                    right_wrist = person_kpts[self.RIGHT_WRIST] if len(person_kpts) > self.RIGHT_WRIST else None
+                                    
+                                    # Check for hand near chest
+                                    for wrist, hand_id in [(left_wrist, f"left_{i}"), (right_wrist, f"right_{i}")]:
+                                        if wrist is not None and wrist[0] > 0 and wrist[1] > 0:
+                                            wrist_x, wrist_y = int(wrist[0]), int(wrist[1])
+                                            
+                                            # Check if wrist is in chest region
+                                            in_chest = (chest_box[0] <= wrist_x <= chest_box[2] and 
+                                                       chest_box[1] <= wrist_y <= chest_box[3])
+                                            
+                                            if in_chest:
+                                                # Start timer for hand in chest
+                                                current_time = time.time()
+                                                if hand_id not in hand_timers:
+                                                    hand_timers[hand_id] = current_time
+                                                elif current_time - hand_timers[hand_id] > hand_stay_time:
+                                                    # Suspiciously long hand stay in chest region
+                                                    cv2.putText(frame, "Suspicious Activity", (x1, y1 - 10),
+                                                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                                                    
+                                                    # Save a screenshot
+                                                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                                                    ss_path = os.path.join(screenshot_dir, f"theft_{timestamp}_{frame_count}.jpg")
+                                                    cv2.imwrite(ss_path, frame)
+                                                    
+                                                    # Record detection
+                                                    theft_detections.append({
+                                                        "type": "theft",
+                                                        "confidence": 0.8,
+                                                        "bbox": [x1, y1, x2, y2],
+                                                        "frame_number": frame_count,
+                                                        "screenshot": ss_path
+                                                    })
+                                            else:
+                                                # Hand in chest but not long enough yet
+                                                cv2.circle(frame, (wrist_x, wrist_y), 5, (0, 255, 255), -1)
+                                        else:
+                                            # Hand not in chest, reset timer
+                                            if hand_id in hand_timers:
+                                                del hand_timers[hand_id]
+                
+                # Write processed frame
+                out.write(frame)
+                
+                frame_count += 1
+                
+                # Report progress
+                if frame_count % 100 == 0:
+                    progress = (frame_count / total_frames) * 100
+                    logger.info(f"Theft detection progress: {progress:.1f}%")
+            
+            # Release resources
+            cap.release()
+            out.release()
+            
+            return {
+                "output_path": output_path,
+                "screenshot_dir": screenshot_dir,
+                "detections": theft_detections,
+                "total_frames": frame_count
+            }
+        
+        except Exception as e:
+            logger.error(f"Error in theft detection: {str(e)}")
+            raise
+
+    async def process_loitering_detection(self, video_path, output_path, threshold_time=10):
+        """Process video for loitering detection"""
+        try:
+            logger.info(f"Starting loitering detection on {video_path}")
+            
+            if self.object_model is None:
+                raise ValueError("Object detection model not loaded")
+            
+            # Ensure output directory exists
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+            
+            # Open video
+            cap = cv2.VideoCapture(video_path)
+            if not cap.isOpened():
+                raise ValueError(f"Could not open video file: {video_path}")
+            
+            # Get video properties
+            fps = int(cap.get(cv2.CAP_PROP_FPS))
+            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            
+            # Create output video writer
+            fourcc = cv2.VideoWriter_fourcc(*'XVID')
+            out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+            
+            # Initialize people tracking
+            person_trackers = {}  # {id: {'first_seen': time, 'position': [x, y]}}
+            device = 0 if torch.cuda.is_available() else 'cpu'
+            
+            frame_count = 0
+            loitering_detections = []
+            
+            while cap.isOpened():
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                
+                # Process every N frames
+                if frame_count % settings.SKIP_FRAMES == 0:
+                    # Current time in video
+                    current_time = frame_count / fps
+                    
+                    # Detect people
+                    results = self.object_model(frame, conf=0.5, device=device)
+                    
+                    # Extract person detections
+                    detections_for_tracker = []
+                    
+                    for result in results:
+                        if hasattr(result, 'boxes') and result.boxes is not None:
+                            boxes = result.boxes.xyxy.cpu().numpy()
+                            confidences = result.boxes.conf.cpu().numpy()
+                            class_ids = result.boxes.cls.cpu().numpy()
+                            
+                            for box, conf, cls_id in zip(boxes, confidences, class_ids):
+                                class_name = self.object_model.names[int(cls_id)]
+                                
+                                # Only track people
+                                if class_name == "person" and conf > 0.5:
+                                    x1, y1, x2, y2 = map(int, box)
+                                    width = x2 - x1
+                                    height = y2 - y1
+                                    
+                                    # Add to tracker format: [x, y, width, height]
+                                    detections_for_tracker.append(([x1, y1, width, height], conf, class_name))
+                    
+                    # Update tracker
+                    if self.tracker is not None and detections_for_tracker:
+                        tracks = self.tracker.update_tracks(detections_for_tracker, frame=frame)
+                        
+                        for track in tracks:
+                            if not track.is_confirmed():
+                                continue
+                            
+                            track_id = track.track_id
+                            track_bbox = track.to_tlbr()  # [x1, y1, x2, y2]
+                            x1, y1, x2, y2 = map(int, track_bbox)
+                            
+                            # Get center position
+                            center_x = (x1 + x2) / 2
+                            center_y = (y1 + y2) / 2
+                            
+                            # Track person
+                            if track_id not in person_trackers:
+                                person_trackers[track_id] = {
+                                    'first_seen': current_time,
+                                    'position': [center_x, center_y]
+                                }
+                            else:
+                                # Calculate time present
+                                time_present = current_time - person_trackers[track_id]['first_seen']
+                                
+                                # Update position
+                                person_trackers[track_id]['position'] = [center_x, center_y]
+                                
+                                # Check for loitering
+                                if time_present > threshold_time:
+                                    # Person has been present too long
+                                    cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
+                                    cv2.putText(frame, f"Loitering: {time_present:.1f}s", (x1, y1 - 10),
+                                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                                    
+                                    # Add loitering detection (once per 2 seconds)
+                                    if int(time_present) % 2 == 0 and int(time_present) != int(time_present - 1):
+                                        loitering_detection = {
+                                            "type": "loitering",
+                                            "track_id": track_id,
+                                            "confidence": 0.9,
+                                            "bbox": [x1, y1, x2, y2],
+                                            "time_present": time_present,
+                                            "frame_number": frame_count
+                                        }
+                                        loitering_detections.append(loitering_detection)
+                                else:
+                                    # Normal tracking
+                                    cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                                    cv2.putText(frame, f"Person {track_id}: {time_present:.1f}s", (x1, y1 - 10),
+                                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                
+                # Write processed frame
+                out.write(frame)
+                
+                frame_count += 1
+                
+                # Report progress
+                if frame_count % 100 == 0:
+                    progress = (frame_count / total_frames) * 100
+                    logger.info(f"Loitering detection progress: {progress:.1f}%")
+            
+            # Release resources
+            cap.release()
+            out.release()
+            
+            return {
+                "output_path": output_path,
+                "detections": loitering_detections,
+                "total_frames": frame_count
+            }
+            
+        except Exception as e:
+            logger.error(f"Error in loitering detection: {str(e)}")
             raise
 
 video_processor = VideoProcessor()
