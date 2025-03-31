@@ -60,6 +60,7 @@ class Video(Base):
 class Detection(Base):
     __tablename__ = "detections"
     
+    # Existing fields
     id = Column(Integer, primary_key=True)
     video_id = Column(Integer, ForeignKey("videos.id"))
     timestamp = Column(DateTime, nullable=False, default=datetime.now)
@@ -70,12 +71,14 @@ class Detection(Base):
     class_name = Column(String(50))
     image_path = Column(String(500))
     detection_metadata = Column(JSON, nullable=True)
+    
+    # Add this field to match your schema
     camera_id = Column(Integer, nullable=True)
     
-    # Remove these fields
-    # gender = Column(String(20), nullable=True)
-    # age_group = Column(String(20), nullable=True)
-    # clothing_color = Column(String(30), nullable=True)
+    # Your other fields...
+    gender = Column(String(20), nullable=True)
+    age_group = Column(String(20), nullable=True)
+    clothing_color = Column(String(30), nullable=True)
 
 class Incident(Base):
     __tablename__ = "incidents"
