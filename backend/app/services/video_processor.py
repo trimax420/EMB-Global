@@ -12,6 +12,10 @@ from datetime import datetime
 from typing import List, Dict, Optional, Tuple
 from ..core.config import settings
 from ..core.websocket import manager
+import face_recognition
+import pickle
+import uuid
+from database import update_customer_face_encoding
 
 logger = logging.getLogger(__name__)
 
@@ -1256,5 +1260,137 @@ class VideoProcessor:
         except Exception as e:
             logger.error(f"Error in theft detection: {str(e)}")
             raise
+
+    def _initialize_models(self):
+        """Initialize required models"""
+        try:
+            from ultralytics import YOLO
+            
+            # Initialize models if path exists
+            if settings.FACE_MODEL_PATH.exists():
+                self.face_model = YOLO(str(settings.FACE_MODEL_PATH))
+                logger.info("Face detection model loaded successfully")
+            
+            if settings.POSE_MODEL_PATH.exists():
+                self.pose_model = YOLO(str(settings.POSE_MODEL_PATH))
+                logger.info("Pose detection model loaded successfully")
+            
+            if settings.OBJECT_MODEL_PATH.exists():
+                self.object_model = YOLO(str(settings.OBJECT_MODEL_PATH))
+                logger.info("Object detection model loaded successfully")
+            
+            # Initialize face recognition components
+            logger.info("Face recognition system initialized")
+                
+        except Exception as e:
+            logger.error(f"Error initializing models: {str(e)}")
+            raise
+
+    # Add this method to track people by face
+    async def track_person_by_face(self, face_image_path, video_path, output_path=None, 
+                                screenshot_dir=None, similarity_threshold=0.6, skip_frames=5):
+        """
+        Track a person in a video based on their face.
+        
+        Args:
+            face_image_path: Path to face image to track
+            video_path: Path to video to search in
+            output_path: Path for output video with tracking visualization
+            screenshot_dir: Directory to save detection screenshots
+            similarity_threshold: Threshold for face matching (0-1)
+            skip_frames: Process every Nth frame
+            
+        Returns:
+            Dictionary with tracking results
+        """
+        try:
+            # Generate output paths if not provided
+            if output_path is None:
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                output_filename = f"tracked_{timestamp}_{Path(video_path).name}"
+                output_path = os.path.join(settings.PROCESSED_DIR, output_filename)
+            
+            if screenshot_dir is None:
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                screenshot_dir = os.path.join(settings.SCREENSHOTS_DIR, f"person_tracking_{timestamp}")
+                os.makedirs(screenshot_dir, exist_ok=True)
+            
+            # Use the face matching method
+            results = await self.process_face_matching(
+                face_image_path, 
+                video_path, 
+                output_path, 
+                screenshot_dir,
+                similarity_threshold,
+                skip_frames
+            )
+            
+            # Create tracking results file
+            tracking_job_id = f"tracking_{uuid.uuid4().hex[:8]}"
+            results_path = os.path.join(settings.PROCESSED_DIR, f"{tracking_job_id}_results.pkl")
+            
+            # Format the results
+            tracking_results = {
+                "status": "completed",
+                "message": "Person tracking completed",
+                "progress": 100,
+                "detections": results["detections"],
+                "frames_processed": results["total_frames"],
+                "total_matches": results["total_matches"],
+                "output_path": results["output_path"],
+                "screenshots": results.get("screenshots", [])
+            }
+            
+            # Save results
+            with open(results_path, 'wb') as f:
+                pickle.dump(tracking_results, f)
+            
+            # Add detailed results
+            results["tracking_job_id"] = tracking_job_id
+            results["results_path"] = results_path
+            
+            return results
+            
+        except Exception as e:
+            logger.error(f"Error tracking person by face: {str(e)}")
+            raise
+
+    # Add a method to store customer face encodings
+    async def add_customer_face_encoding(self, customer_id, face_image_path):
+        """
+        Extract face encoding from an image and store it for a customer.
+        
+        Args:
+            customer_id: ID of the customer to update
+            face_image_path: Path to the customer's face image
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        try:
+            # Load the face image
+            face_image = face_recognition.load_image_file(face_image_path)
+            face_locations = face_recognition.face_locations(face_image)
+            
+            if not face_locations:
+                logger.error(f"No face detected in the image: {face_image_path}")
+                return False
+            
+            # Extract face encoding
+            face_encoding = face_recognition.face_encodings(face_image, [face_locations[0]])[0]
+            
+            # Save to database
+            success = await update_customer_face_encoding(customer_id, face_encoding.tolist())
+            
+            if success:
+                logger.info(f"Updated face encoding for customer {customer_id}")
+            else:
+                logger.error(f"Failed to update face encoding for customer {customer_id}")
+            
+            return success
+            
+        except Exception as e:
+            logger.error(f"Error adding customer face encoding: {str(e)}")
+            return False
 
 video_processor = VideoProcessor()

@@ -27,6 +27,9 @@ from database import (
     add_customer_data
 )
 
+# Import face tracking endpoints
+from .endpoints.face_tracking import router as face_tracking_router
+
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
@@ -51,6 +54,8 @@ try:
     logger.info("Static directories mounted successfully")
 except Exception as e:
     logger.error(f"Error mounting static directories: {str(e)}")
+
+router.include_router(face_tracking_router, prefix="/face-tracking", tags=["face-tracking"])
 
 @router.get("/")
 async def root():

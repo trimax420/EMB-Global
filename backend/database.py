@@ -1,6 +1,6 @@
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import declarative_base, sessionmaker
-from sqlalchemy import Column, Integer, String, Float, Boolean, JSON, DateTime, ForeignKey, Text, select
+from sqlalchemy import Column, Integer, String, Float, Boolean, JSON, DateTime, ForeignKey, Text, select , Boolean
 from datetime import datetime, timedelta
 import json
 import os
@@ -400,3 +400,112 @@ async def update_incident(incident_id: int, update_data: dict):
             await session.rollback()
             logger.error(f"Error updating incident: {str(e)}")
             return False
+        
+
+async def update_customer_face_encoding(customer_id: int, face_encoding, session: AsyncSession = None):
+    """
+    Update a customer's face encoding for future matching.
+    
+    Args:
+        customer_id: ID of the customer to update
+        face_encoding: Face encoding data (numpy array converted to list)
+        session: Optional database session
+    
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    if session is None:
+        from database import async_session, CustomerData
+        async with async_session() as session:
+            try:
+                customer = await session.get(CustomerData, customer_id)
+                if customer:
+                    # Convert numpy array to list for JSON storage if needed
+                    if hasattr(face_encoding, 'tolist'):
+                        face_encoding = face_encoding.tolist()
+                    
+                    customer.face_encoding = face_encoding
+                    await session.commit()
+                    return True
+                return False
+            except Exception as e:
+                await session.rollback()
+                logger.error(f"Error updating customer face encoding: {str(e)}")
+                return False
+    else:
+        try:
+            from database import CustomerData
+            customer = await session.get(CustomerData, customer_id)
+            if customer:
+                # Convert numpy array to list for JSON storage if needed
+                if hasattr(face_encoding, 'tolist'):
+                    face_encoding = face_encoding.tolist()
+                
+                customer.face_encoding = face_encoding
+                await session.commit()
+                return True
+            return False
+        except Exception as e:
+            await session.rollback()
+            logger.error(f"Error updating customer face encoding: {str(e)}")
+            return False
+
+# Add a function to find customers by face encoding similarity
+async def find_customers_by_face(face_encoding, similarity_threshold=0.6, limit=10):
+    """
+    Find customers with similar face encodings.
+    
+    Args:
+        face_encoding: Query face encoding
+        similarity_threshold: Maximum distance for a match (lower is stricter)
+        limit: Maximum number of results to return
+    
+    Returns:
+        List of matching customers with similarity scores
+    """
+    import face_recognition
+    import numpy as np
+    from database import async_session, CustomerData, select
+    
+    async with async_session() as session:
+        try:
+            # Get all customers with face encodings
+            query = select(CustomerData).where(CustomerData.face_encoding != None)
+            result = await session.execute(query)
+            customers = result.scalars().all()
+            
+            matches = []
+            for customer in customers:
+                try:
+                    # Skip if no valid encoding
+                    if not customer.face_encoding:
+                        continue
+                        
+                    # Convert stored encoding back to numpy array
+                    customer_encoding = np.array(customer.face_encoding)
+                    
+                    # Calculate face distance
+                    distance = face_recognition.face_distance([customer_encoding], face_encoding)[0]
+                    
+                    # If distance is below threshold, consider it a match
+                    if distance < similarity_threshold:
+                        matches.append({
+                            "customer_id": customer.id,
+                            "image_url": customer.image_url,
+                            "entry_time": customer.entry_time.isoformat() if customer.entry_time else None,
+                            "entry_date": customer.entry_date,
+                            "gender": customer.gender,
+                            "age_group": customer.age_group,
+                            "similarity": float(1.0 - distance)  # Convert to similarity score
+                        })
+                except Exception as e:
+                    logger.warning(f"Error processing customer {customer.id}: {str(e)}")
+                    continue
+            
+            # Sort by similarity (highest first) and limit results
+            matches.sort(key=lambda x: x["similarity"], reverse=True)
+            return matches[:limit]
+            
+        except Exception as e:
+            logger.error(f"Error searching customers by face: {str(e)}")
+            return []
