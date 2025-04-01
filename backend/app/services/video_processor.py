@@ -226,7 +226,7 @@ class VideoProcessor:
         Args:
             video_path: Path to input video file
             output_path: Path to save processed video
-            camera_id: ID of the camera feed (if available)
+            camera_id: ID of the camera feed (if available)                        
             threshold_time: Time threshold (in seconds) to consider loitering
             
         Returns:
@@ -682,5 +682,364 @@ class VideoProcessor:
             
         except Exception as e:
             logger.error(f"Error in loitering detection: {str(e)}")
+            raise
+
+    async def process_theft_detection_fixed(self, video_path, output_path, screenshots_dir, hand_stay_time=2.0, camera_id=None):
+        """
+        Process video for theft detection using the original logic but with fixed tracking.
+        Detects suspicious hand movements in chest and waist areas and monitors eye gaze.
+        
+        Args:
+            video_path: Path to input video file
+            output_path: Path to save processed video
+            screenshots_dir: Directory to save suspicious activity screenshots
+            hand_stay_time: Default threshold time (in seconds) for suspicious hand positions
+            camera_id: ID of the camera feed (if available)
+            
+        Returns:
+            Dictionary with processing results
+        """
+        try:
+            logger.info(f"Starting fixed theft detection on {video_path}")
+            
+            if self.pose_model is None:
+                raise ValueError("Pose detection model not loaded")
+            
+            # Ensure output directories exist
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+            os.makedirs(screenshots_dir, exist_ok=True)
+            
+            # Open video
+            cap = cv2.VideoCapture(video_path)
+            if not cap.isOpened():
+                raise ValueError(f"Could not open video file: {video_path}")
+            
+            # Get video properties
+            fps = int(cap.get(cv2.CAP_PROP_FPS))
+            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            
+            # Create output video writer
+            fourcc = cv2.VideoWriter_fourcc(*'XVID')
+            out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+            
+            # Define theft detection settings
+            skip_frames = settings.SKIP_FRAMES
+            hand_stay_time_chest = settings.HAND_STAY_TIME_CHEST
+            hand_stay_time_waist = settings.HAND_STAY_TIME_WAIST
+            crop_padding = settings.CROP_PADDING
+            
+            # COCO Pose Keypoints
+            LEFT_WRIST = self.LEFT_WRIST
+            RIGHT_WRIST = self.RIGHT_WRIST
+            LEFT_SHOULDER = self.LEFT_SHOULDER
+            RIGHT_SHOULDER = self.RIGHT_SHOULDER
+            NOSE = self.NOSE
+            
+            # Tracking variables
+            person_tracking = {}
+            hand_timers = {}
+            previous_hand_positions = {}
+            next_person_id = 1
+            detected_theft_persons = set()
+            
+            # Helper functions
+            def is_intersecting(box1, box2):
+                """Check if two boxes intersect"""
+                return not (box1[2] < box2[0] or box1[0] > box2[2] or box1[3] < box2[1] or box1[1] > box2[3])
+                
+            def approximate_eye_gaze(nose, chest_box):
+                """Approximate whether the person is looking at their chest region using the nose keypoint."""
+                if nose is None or nose[0] <= 0:
+                    return False
+                nose_x, nose_y = int(nose[0]), int(nose[1])
+                return (chest_box[0] < nose_x < chest_box[2]) and (chest_box[1] < nose_y < chest_box[3])
+                
+            def draw_skeleton(frame, keypoints, color=(0, 255, 0), thickness=2):
+                """Draw a skeleton on the frame based on keypoints."""
+                connections = [
+                    (0, 1), (0, 2), (1, 3), (2, 4),  # Head and shoulders
+                    (5, 6), (5, 7), (6, 8),          # Torso and arms
+                    (7, 9), (8, 10),                 # Arms
+                    (5, 11), (6, 12),                # Torso to legs
+                    (11, 12),                        # Hips
+                    (11, 13), (12, 14),              # Legs
+                    (13, 15), (14, 16)               # Ankles
+                ]
+                for keypoint in keypoints:
+                    if keypoint[0] > 0 and keypoint[1] > 0:  # Only draw visible keypoints
+                        x, y = int(keypoint[0]), int(keypoint[1])
+                        cv2.circle(frame, (x, y), radius=5, color=color, thickness=-1)
+                for connection in connections:
+                    idx1, idx2 = connection
+                    if idx1 < len(keypoints) and idx2 < len(keypoints):
+                        if keypoints[idx1][0] > 0 and keypoints[idx1][1] > 0 and keypoints[idx2][0] > 0 and keypoints[idx2][1] > 0:
+                            pt1 = tuple(map(int, keypoints[idx1][:2]))
+                            pt2 = tuple(map(int, keypoints[idx2][:2]))
+                            cv2.line(frame, pt1, pt2, color, thickness)
+                            
+            # Helper function to save theft incident to database
+            async def save_theft_incident(person_id, frame, bbox, keypoints, zone_type, looking_at_chest=False):
+                incident_id = None
+                timestamp = datetime.now()
+                
+                try:
+                    # Create a filename for the incident image
+                    incident_filename = f"theft_{person_id}_{int(time.time())}.jpg"
+                    incident_image_path = os.path.join(screenshots_dir, incident_filename)
+                    
+                    # Save the full frame with annotation
+                    annotated_frame = frame.copy()
+                    
+                    # Crop the suspect with padding
+                    x1, y1, x2, y2 = map(int, bbox)
+                    x1_crop = max(0, x1 - crop_padding)
+                    y1_crop = max(0, y1 - crop_padding)
+                    x2_crop = min(frame.shape[1], x2 + crop_padding)
+                    y2_crop = min(frame.shape[0], y2 + crop_padding)
+                    suspect_crop = frame[y1_crop:y2_crop, x1_crop:x2_crop]
+                    
+                    # Save both the annotated full frame and the cropped suspect
+                    cv2.imwrite(incident_image_path, annotated_frame)
+                    crop_filename = os.path.join(screenshots_dir, f"crop_{person_id}_{int(time.time())}.jpg")
+                    cv2.imwrite(crop_filename, suspect_crop)
+                    
+                    # Create detection record
+                    from database import add_detection, add_incident
+                    
+                    # Prepare detection data
+                    behavior_desc = "not looking at hands" if not looking_at_chest else "looking at hands"
+                    detection_data = {
+                        "video_id": None,  # Live feed doesn't have video ID
+                        "camera_id": camera_id,
+                        "timestamp": timestamp,
+                        "frame_number": frame_count,
+                        "detection_type": "theft",
+                        "confidence": 0.8,  # Default confidence
+                        "bbox": bbox,
+                        "class_name": "person",
+                        "image_path": crop_filename,
+                        "detection_metadata": {
+                            "person_id": person_id,
+                            "zone_type": zone_type,
+                            "behavior": behavior_desc
+                        }
+                    }
+                    
+                    # Add detection to database
+                    detection_id = await add_detection(detection_data)
+                    
+                    # Prepare incident description
+                    description = f"Suspicious hand movement in {zone_type} area while {behavior_desc}"
+                    
+                    # Create incident record
+                    incident_data = {
+                        "type": "theft",
+                        "timestamp": timestamp,
+                        "location": f"Camera {camera_id}" if camera_id else "Unknown",
+                        "description": description,
+                        "image_path": crop_filename,
+                        "video_url": video_path,
+                        "severity": "high",
+                        "confidence": 0.8,
+                        "detection_ids": [detection_id],
+                        "is_resolved": False
+                    }
+                    
+                    # Create new incident
+                    incident_id = await add_incident(incident_data)
+                    
+                    return incident_id
+                    
+                except Exception as e:
+                    logger.error(f"Error saving theft incident: {str(e)}")
+                    return None
+            
+            # Process frames
+            frame_count = 0
+            theft_detections = []
+            device = 0 if torch.cuda.is_available() else 'cpu'
+            current_time = 0
+            
+            while cap.isOpened():
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                
+                # Calculate current time in video
+                current_time = frame_count / fps
+                
+                # Process every N frames for performance
+                if frame_count % skip_frames == 0:
+                    # Detect people using pose model
+                    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    pose_results = self.pose_model(frame_rgb, conf=0.5, device=device)
+                    
+                    # Process each detection
+                    tracked_people = []
+                    
+                    for result in pose_results:
+                        if hasattr(result, 'keypoints') and result.keypoints is not None:
+                            keypoints = result.keypoints.xy.cpu().numpy()
+                            boxes = result.boxes.xyxy.cpu().numpy()
+                            confidences = result.boxes.conf.cpu().numpy()
+                            
+                            for i in range(len(boxes)):
+                                bbox = boxes[i].tolist()
+                                kpts = keypoints[i].tolist() if i < len(keypoints) else []
+                                
+                                # Simple ID assignment - in a real system, you'd use a more robust matching method
+                                person_id = f"person_{next_person_id}"
+                                next_person_id += 1
+                                
+                                # Add to tracked people
+                                tracked_people.append({
+                                    "id": person_id,
+                                    "bbox": bbox,
+                                    "keypoints": kpts,
+                                    "confidence": float(confidences[i])
+                                })
+                    
+                    # Process each tracked person
+                    for person in tracked_people:
+                        person_id = person["id"]
+                        keypoints = person["keypoints"]
+                        bbox = person["bbox"]
+                        
+                        # Skip if not enough keypoints for full analysis
+                        if len(keypoints) < 17:
+                            continue
+                        
+                        # Get bounding box coordinates
+                        x1, y1, x2, y2 = map(int, bbox)
+                        width, height = x2 - x1, y2 - y1
+                        
+                        # Define detection zones
+                        chest_box = [x1 + int(0.1 * width), y1, x2 - int(0.1 * width), y1 + int(0.4 * height)]
+                        left_waist_box = [x1, y1 + int(0.5 * height), x1 + int(0.5 * width), y2]
+                        right_waist_box = [x1 + int(0.5 * width), y1 + int(0.5 * height), x2, y2]
+                        
+                        # Draw detection zones
+                        cv2.rectangle(frame, tuple(chest_box[:2]), tuple(chest_box[2:]), (0, 255, 255), 2)
+                        cv2.rectangle(frame, tuple(left_waist_box[:2]), tuple(left_waist_box[2:]), (255, 0, 0), 2)
+                        cv2.rectangle(frame, tuple(right_waist_box[:2]), tuple(right_waist_box[2:]), (0, 0, 255), 2)
+                        
+                        # Draw skeleton
+                        draw_skeleton(frame, keypoints)
+                        
+                        # Get wrist and nose positions
+                        left_wrist = keypoints[LEFT_WRIST] if LEFT_WRIST < len(keypoints) and keypoints[LEFT_WRIST][0] > 0 else None
+                        right_wrist = keypoints[RIGHT_WRIST] if RIGHT_WRIST < len(keypoints) and keypoints[RIGHT_WRIST][0] > 0 else None
+                        nose = keypoints[NOSE] if NOSE < len(keypoints) and keypoints[NOSE][0] > 0 else None
+                        
+                        # Approximate eye gaze
+                        is_looking_at_chest = approximate_eye_gaze(nose, chest_box)
+                        
+                        # Track hands in chest/waist regions
+                        for wrist, label in [(left_wrist, f"{person_id}_left"), (right_wrist, f"{person_id}_right")]:
+                            if wrist is None:
+                                continue
+                            
+                            wrist_x, wrist_y = int(wrist[0]), int(wrist[1])
+                            wrist_box = [wrist_x - 10, wrist_y - 10, wrist_x + 10, wrist_y + 10]
+                            cv2.rectangle(frame, (wrist_box[0], wrist_box[1]), (wrist_box[2], wrist_box[3]), (0, 255, 0), 2)
+                            
+                            # Check if hand is in a suspicious zone
+                            in_chest = is_intersecting(wrist_box, chest_box)
+                            in_left_waist = is_intersecting(wrist_box, left_waist_box)
+                            in_right_waist = is_intersecting(wrist_box, right_waist_box)
+                            
+                            # Suspicious behavior detection
+                            if in_chest or in_left_waist or in_right_waist:
+                                # Determine which zone and appropriate threshold
+                                zone_type = "chest" if in_chest else "waist"
+                                hand_stay_time = hand_stay_time_chest if in_chest else hand_stay_time_waist
+                                
+                                # Start or continue timing hand position
+                                if label not in hand_timers:
+                                    hand_timers[label] = current_time
+                                elif current_time - hand_timers[label] > hand_stay_time:
+                                    # If hand has been in zone for threshold time and person isn't already flagged
+                                    if person_id not in detected_theft_persons:
+                                        # Increased suspicion if not looking at chest
+                                        suspicion_text = "⚠️ Shoplifter!"
+                                        cv2.putText(frame, suspicion_text, (x1, y1 - 10),
+                                                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                                        
+                                        # Mark this person as detected
+                                        detected_theft_persons.add(person_id)
+                                        
+                                        # Log detection
+                                        duration = current_time - hand_timers[label]
+                                        logger.info(f"Theft detection: Person {person_id}, hand in {zone_type} for {duration:.1f}s, looking: {is_looking_at_chest}")
+                                        
+                                        # Save incident to database
+                                        await save_theft_incident(
+                                            person_id, frame, bbox, keypoints, zone_type, is_looking_at_chest
+                                        )
+                                        
+                                        # Record for function return
+                                        theft_detection = {
+                                            "type": "theft",
+                                            "person_id": person_id,
+                                            "confidence": 0.8,
+                                            "bbox": bbox,
+                                            "zone": zone_type,
+                                            "frame_number": frame_count,
+                                            "looking_at_chest": is_looking_at_chest,
+                                            "duration": duration
+                                        }
+                                        theft_detections.append(theft_detection)
+                                
+                                # Store previous hand positions
+                                previous_hand_positions[label] = (in_chest, in_left_waist, in_right_waist)
+                            else:
+                                # Hand not in suspicious zone - reset timer
+                                if label in hand_timers:
+                                    del hand_timers[label]
+                        
+                        # Visualization - red box for detected theft, green otherwise
+                        if person_id in detected_theft_persons:
+                            # Detected theft - red box
+                            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
+                            cv2.putText(frame, f"ID: {person_id} - THEFT", (x1, y1 - 30),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                        else:
+                            # Normal tracking - green box
+                            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                            cv2.putText(frame, f"ID: {person_id}", (x1, y1 - 30),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                    
+                    # Clean up timers for hands no longer tracked
+                    all_current_labels = set(f"{person['id']}_{side}" for person in tracked_people for side in ["left", "right"])
+                    for label in list(hand_timers.keys()):
+                        if label not in all_current_labels:
+                            del hand_timers[label]
+                
+                # Write processed frame
+                out.write(frame)
+                
+                frame_count += 1
+                
+                # Report progress periodically
+                if frame_count % 100 == 0:
+                    progress = (frame_count / total_frames) * 100
+                    logger.info(f"Theft detection progress: {progress:.1f}%")
+            
+            # Release resources
+            cap.release()
+            out.release()
+            
+            return {
+                "output_path": output_path,
+                "screenshots_dir": screenshots_dir,
+                "detections": theft_detections,
+                "total_frames": frame_count,
+                "total_theft_incidents": len(detected_theft_persons)
+            }
+            
+        except Exception as e:
+            logger.error(f"Error in theft detection: {str(e)}")
             raise
 video_processor = VideoProcessor()
