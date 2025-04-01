@@ -96,22 +96,42 @@ async def detect_loitering(
     video_path: str = Query(..., description="Path to input video"),
     threshold_time: int = Query(10, description="Time threshold for loitering in seconds")
 ):
-    """Detect loitering in video"""
+    """
+    Detect loitering in video with smooth tracking and persistent person identification.
+    Analyzes how long people remain in camera view and creates alerts for extended stays.
+    
+    Args:
+        video_path: Path to input video file
+        threshold_time: Time threshold (in seconds) to consider loitering
+        
+    Returns:
+        Processing job information
+    """
     try:
-        # Create output path
+        # Create output paths
         output_path = settings.PROCESSED_DIR / f"loitering_{Path(video_path).name}"
+        screenshot_dir = settings.SCREENSHOTS_DIR / f"loitering_{int(time.time())}"
+        screenshot_dir.mkdir(parents=True, exist_ok=True)
+        
+        logger.info(f"Starting loitering detection for video: {video_path}")
+        logger.info(f"Screenshots will be saved to: {screenshot_dir}")
+        logger.info(f"Using threshold time: {threshold_time}s")
         
         # Start loitering detection in background
         background_tasks.add_task(
-            video_processor.process_loitering_detection,
+            video_processor.process_loitering_detection_smooth,
             video_path,
             str(output_path),
+            None,  # camera_id
             threshold_time
         )
         
         return {
-            "message": "Loitering detection started",
-            "output_path": str(output_path)
+            "message": "Loitering detection started with smooth tracking",
+            "output_path": str(output_path),
+            "screenshot_dir": str(screenshot_dir),
+            "status": "processing",
+            "threshold_time": threshold_time
         }
     except Exception as e:
         logger.error(f"Error starting loitering detection: {str(e)}")
@@ -216,8 +236,7 @@ async def detect_theft(
 ):
     """
     Detect suspicious behavior (potential theft) in video by monitoring hand movements.
-    Detects when hands stay near pockets, shopping areas, or products for extended periods.
-    Also analyzes if the person is looking at their hands during suspicious movements.
+    Uses improved tracking for smooth inference and consistent person IDs across frames.
     
     Args:
         video_path: Path to input video file
@@ -244,10 +263,10 @@ async def detect_theft(
         settings.HAND_STAY_TIME_CHEST = hand_stay_time_chest
         settings.HAND_STAY_TIME_WAIST = hand_stay_time_waist
         
-        # Start theft detection in background
+        # Start theft detection in background with smooth tracking
         background_tasks.add_task(
             process_with_settings_reset,
-            video_processor.process_theft_detection_fixed,  # Use the fixed version with original logic
+            video_processor.process_theft_detection_smooth,  # Use the smooth version with consistent tracking
             original_chest_time,
             original_waist_time,
             video_path,
@@ -256,7 +275,7 @@ async def detect_theft(
         )
         
         return {
-            "message": "Theft detection started",
+            "message": "Theft detection started with smooth tracking",
             "output_path": str(output_path),
             "screenshot_dir": str(screenshot_dir),
             "status": "processing",
@@ -268,6 +287,17 @@ async def detect_theft(
     except Exception as e:
         logger.error(f"Error starting theft detection: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+async def process_with_settings_reset(detection_func, original_chest_time, original_waist_time, *args, **kwargs):
+    """Helper function to process video and restore original settings afterward"""
+    try:
+        # Process the video
+        result = await detection_func(*args, **kwargs)
+        return result
+    finally:
+        # Restore original settings
+        settings.HAND_STAY_TIME_CHEST = original_chest_time
+        settings.HAND_STAY_TIME_WAIST = original_waist_time
 
 async def process_with_settings_reset(detection_func, original_chest_time, original_waist_time, *args, **kwargs):
     """Helper function to process video and restore original settings afterward"""
