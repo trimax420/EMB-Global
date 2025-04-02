@@ -13,8 +13,9 @@ import {
   AlertTriangle
 } from 'lucide-react';
 import axios from 'axios';
+import { useApi } from '../contexts/ApiContext';
 
-const API_BASE_URL = 'http://localhost:8000/api';
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api';
 
 const LiveCameraComponent = ({ selectedCamera, onUpdateStats }) => {
   const [isProcessing, setIsProcessing] = useState(false);
@@ -33,53 +34,88 @@ const LiveCameraComponent = ({ selectedCamera, onUpdateStats }) => {
   const [socketConnected, setSocketConnected] = useState(false);
   const socketRef = useRef(null);
   const resultsInterval = useRef(null);
+  const videoRef = useRef(null);
+  
+  // Get the websocket service from API context
+  const { websocket } = useApi?.() || {};
 
   // Connect to WebSocket for real-time updates
   useEffect(() => {
-    const socket = new WebSocket('ws://localhost:8000/api/ws');
-    
-    socket.onopen = () => {
-      console.log('WebSocket connected');
-      setSocketConnected(true);
-      socketRef.current = socket;
-    };
-    
-    socket.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        
-        // Handle different message types from server
-        if (data.type === 'processing_progress') {
-          setProgress(data.progress);
-        } else if (data.type === 'detection') {
-          setDetections(prev => [...prev, data.detection]);
-          updateDetectionStats(data.detection);
-        } else if (data.type === 'processing_completed') {
-          setIsProcessing(false);
-          setProgress(100);
-        } else if (data.type === 'processing_error') {
-          setError(data.error);
-          setIsProcessing(false);
+    if (!websocket?.isConnected) {
+      // Set up a new connection if not available through context
+      const wsUrl = import.meta.env.VITE_WS_URL || 'ws://localhost:8000/api/ws';
+      const socket = new WebSocket(wsUrl);
+      
+      socket.onopen = () => {
+        console.log('WebSocket connected');
+        setSocketConnected(true);
+        socketRef.current = socket;
+      };
+      
+      socket.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          
+          // Handle different message types from server
+          if (data.type === 'processing_progress') {
+            setProgress(data.progress);
+          } else if (data.type === 'detection') {
+            setDetections(prev => [...prev, data.detection]);
+            updateDetectionStats(data.detection);
+          } else if (data.type === 'processing_completed') {
+            setIsProcessing(false);
+            setProgress(100);
+          } else if (data.type === 'processing_error') {
+            setError(data.error);
+            setIsProcessing(false);
+          }
+        } catch (error) {
+          console.error('WebSocket message error:', error);
         }
-      } catch (error) {
-        console.error('WebSocket message error:', error);
-      }
-    };
-    
-    socket.onclose = () => {
-      console.log('WebSocket disconnected');
-      setSocketConnected(false);
-    };
-    
-    return () => {
-      if (socketRef.current) {
-        socketRef.current.close();
-      }
-      if (resultsInterval.current) {
-        clearInterval(resultsInterval.current);
-      }
-    };
-  }, []);
+      };
+      
+      socket.onclose = () => {
+        console.log('WebSocket disconnected');
+        setSocketConnected(false);
+      };
+      
+      return () => {
+        if (socketRef.current) {
+          socketRef.current.close();
+        }
+      };
+    } else {
+      // Use the websocket from context
+      setSocketConnected(true);
+      
+      // Set up listeners
+      websocket.addMessageListener('processing_progress', (data) => {
+        setProgress(data.progress);
+      });
+      
+      websocket.addMessageListener('detection', (data) => {
+        setDetections(prev => [...prev, data.detection]);
+        updateDetectionStats(data.detection);
+      });
+      
+      websocket.addMessageListener('processing_completed', () => {
+        setIsProcessing(false);
+        setProgress(100);
+      });
+      
+      websocket.addMessageListener('processing_error', (data) => {
+        setError(data.error);
+        setIsProcessing(false);
+      });
+      
+      return () => {
+        websocket.removeMessageListener('processing_progress');
+        websocket.removeMessageListener('detection');
+        websocket.removeMessageListener('processing_completed');
+        websocket.removeMessageListener('processing_error');
+      };
+    }
+  }, [websocket]);
 
   // Polling for tracking results if a job is in progress
   useEffect(() => {
@@ -152,11 +188,17 @@ const LiveCameraComponent = ({ selectedCamera, onUpdateStats }) => {
       
       let response;
       
+      // For local video files, we'll need to first ensure the video is accessible to the backend
+      // We'll assume the videos are in a directory that's accessible by both frontend and backend
+      // In a real deployment, you might need to upload the video first
+      
+      const videoPath = selectedCamera.videoUrl;
+      
       switch (type) {
         case 'loitering':
           response = await axios.post(`${API_BASE_URL}/videos/loitering-detection`, null, {
             params: {
-              video_path: selectedCamera.videoUrl,
+              video_path: videoPath,
               threshold_time: 10 // in seconds, adjust as needed
             }
           });
@@ -165,7 +207,7 @@ const LiveCameraComponent = ({ selectedCamera, onUpdateStats }) => {
         case 'theft':
           response = await axios.post(`${API_BASE_URL}/videos/theft-detection`, null, {
             params: {
-              video_path: selectedCamera.videoUrl,
+              video_path: videoPath,
               hand_stay_time_chest: 1.0,
               hand_stay_time_waist: 1.5
             }
@@ -174,27 +216,21 @@ const LiveCameraComponent = ({ selectedCamera, onUpdateStats }) => {
           
         case 'face_tracking':
           // You would need to provide a face image for tracking
-          // This is a placeholder - you would need a UI for face selection
-          const formData = new FormData();
-          formData.append('face_image', null); // Replace with actual image
-          formData.append('video_path', selectedCamera.videoUrl);
-          
-          response = await axios.post(`${API_BASE_URL}/face-tracking/track-person`, formData, {
-            headers: {
-              'Content-Type': 'multipart/form-data'
-            }
-          });
-          
-          if (response.data.job_id) {
-            setJobId(response.data.job_id);
-          }
-          break;
+          // This implementation would require a UI component for face selection
+          alert('Face tracking requires a reference face image. Not implemented in this demo.');
+          setIsProcessing(false);
+          return;
           
         default:
           throw new Error('Invalid processing type');
       }
       
       console.log(`Started ${type} detection:`, response.data);
+      
+      // Set the job ID if provided by the response
+      if (response.data && response.data.job_id) {
+        setJobId(response.data.job_id);
+      }
       
     } catch (error) {
       console.error(`Error starting ${type} detection:`, error);
@@ -208,6 +244,13 @@ const LiveCameraComponent = ({ selectedCamera, onUpdateStats }) => {
     setIsFullscreen(!isFullscreen);
   };
 
+  // Create a video player that restarts when the camera changes
+  useEffect(() => {
+    if (videoRef.current) {
+      videoRef.current.load(); // Reload the video when source changes
+    }
+  }, [selectedCamera]);
+
   // Render detection boxes
   const renderDetections = () => {
     return detections.map((detection, index) => {
@@ -215,12 +258,18 @@ const LiveCameraComponent = ({ selectedCamera, onUpdateStats }) => {
       if (!detection.bbox) return null;
       
       const [x1, y1, x2, y2] = detection.bbox;
+      
+      // Get video dimensions for position calculation
+      const videoElement = videoRef.current;
+      const videoWidth = videoElement?.videoWidth || 640;
+      const videoHeight = videoElement?.videoHeight || 480;
+      
       const style = {
         position: 'absolute',
-        left: `${(x1 / selectedCamera.resolution?.width || 0) * 100}%`,
-        top: `${(y1 / selectedCamera.resolution?.height || 0) * 100}%`,
-        width: `${((x2 - x1) / selectedCamera.resolution?.width || 0) * 100}%`,
-        height: `${((y2 - y1) / selectedCamera.resolution?.height || 0) * 100}%`,
+        left: `${(x1 / videoWidth) * 100}%`,
+        top: `${(y1 / videoHeight) * 100}%`,
+        width: `${((x2 - x1) / videoWidth) * 100}%`,
+        height: `${((y2 - y1) / videoHeight) * 100}%`,
         border: detection.type === 'theft' ? '2px solid red' : 
                 detection.type === 'loitering' ? '2px solid orange' : '2px solid green',
         boxSizing: 'border-box',
@@ -252,13 +301,18 @@ const LiveCameraComponent = ({ selectedCamera, onUpdateStats }) => {
     return detections.map((detection, index) => {
       if (!detection.keypoints) return null;
       
+      // Get video dimensions for position calculation
+      const videoElement = videoRef.current;
+      const videoWidth = videoElement?.videoWidth || 640;
+      const videoHeight = videoElement?.videoHeight || 480;
+      
       return detection.keypoints.map((keypoint, kpIndex) => {
         if (keypoint[0] <= 0 || keypoint[1] <= 0) return null;
         
         const style = {
           position: 'absolute',
-          left: `${(keypoint[0] / selectedCamera.resolution?.width || 0) * 100}%`,
-          top: `${(keypoint[1] / selectedCamera.resolution?.height || 0) * 100}%`,
+          left: `${(keypoint[0] / videoWidth) * 100}%`,
+          top: `${(keypoint[1] / videoHeight) * 100}%`,
           width: '4px',
           height: '4px',
           backgroundColor: 'red',
@@ -363,12 +417,18 @@ const LiveCameraComponent = ({ selectedCamera, onUpdateStats }) => {
       {/* Camera view with detections */}
       <div className="relative flex-grow rounded-lg overflow-hidden bg-gray-900">
         <div className={`relative ${isFullscreen ? 'h-full' : 'aspect-video'}`}>
-          {/* Camera feed */}
-          <img
-            src={selectedCamera.videoUrl || "https://via.placeholder.com/640x360?text=No+Camera+Selected"}
-            alt="Live Camera Feed"
+          {/* Replace GIF with actual video element */}
+          <video
+            ref={videoRef}
             className="w-full h-full object-cover"
-          />
+            autoPlay
+            loop
+            muted
+            controls={false}
+          >
+            <source src={selectedCamera.videoUrl} type="video/mp4" />
+            Your browser does not support the video tag.
+          </video>
           
           {/* Detection boxes and keypoints */}
           {isProcessing && renderDetections()}

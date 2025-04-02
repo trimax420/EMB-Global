@@ -31,8 +31,8 @@ const API_BASE_URL = 'http://localhost:8000/api';
 const cameras = [
   {
     id: 1,
-    name: "Front Entrance",
-    videoUrl: "https://developer-blogs.nvidia.com/wp-content/uploads/2022/12/Figure8-output_blurred-compressed.gif",
+    name: "Store Entrance",
+    videoUrl: "E:\code\EMB Global\public\videos\store_entrance.mp4",
     details: { people: 4, vehicles: 1, alerts: 4, objects: 5 },
     status: "online",
     resolution: { width: 640, height: 480 },
@@ -41,8 +41,8 @@ const cameras = [
   },
   {
     id: 2,
-    name: "Parking Lot",
-    videoUrl: "https://user-images.githubusercontent.com/11428131/139924111-58637f2e-f2f6-42d8-8812-ab42fece92b4.gif",
+    name: "electronics",
+    videoUrl: "E:\code\EMB Global\public\videos\electronics_section.mp4",
     details: { people: 2, vehicles: 3, alerts: 1, objects: 2 },
     status: "online",
     resolution: { width: 640, height: 480 },
@@ -52,7 +52,7 @@ const cameras = [
   {
     id: 3,
     name: "Electronics Department",
-    videoUrl: "https://developer-blogs.nvidia.com/wp-content/uploads/2024/05/gif-people-in-store-bounding-boxes.gif",
+    videoUrl: "E:\code\EMB Global\public\videos\checkout.mp4",
     details: { people: 0, vehicles: 0, alerts: 0, objects: 1 },
     status: "online",
     resolution: { width: 640, height: 480 },
@@ -61,7 +61,7 @@ const cameras = [
   },
   {
     id: 4,
-    name: "Storage Room",
+    name: "CheckOut",
     videoUrl: "https://user-images.githubusercontent.com/11428131/137016574-0d180d9b-fb9a-42a9-94b7-fbc0dbc18560.gif",
     details: { people: 1, vehicles: 0, alerts: 2, objects: 3 },
     status: "offline",

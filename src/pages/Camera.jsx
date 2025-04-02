@@ -6,9 +6,9 @@ const Cameras = () => {
 
   // Dummy camera data
   const cameraList = [
-    { id: 1, name: "Front Entrance", status: "online", streamUrl: "https://developer-blogs.nvidia.com/wp-content/uploads/2022/12/Figure8-output_blurred-compressed.gif" },
-    { id: 2, name: "Main Hall", status: "online", streamUrl: "https://user-images.githubusercontent.com/11428131/139924111-58637f2e-f2f6-42d8-8812-ab42fece92b4.gif" },
-    { id: 3, name: "Zone 2", status: "online", streamUrl: "https://developer-blogs.nvidia.com/wp-content/uploads/2024/05/gif-people-in-store-bounding-boxes.gif" },
+    { id: 1, name: "Store Entrance", status: "online", streamUrl: "/videos/store_entrance.mp4" },
+    { id: 2, name: "electronics", status: "online", streamUrl: "/videos/electronics_section.mp4" },
+    { id: 3, name: "CheckOut", status: "online", streamUrl: "/videos/checkout.mp4" },
     { id: 4, name: "Parking Lot", status: "offline", streamUrl: "" },
   ];
 
@@ -60,11 +60,15 @@ const Cameras = () => {
       {fullscreenCamera && (
         <div className="fixed inset-0 bg-black z-50 flex items-center justify-center">
           <div className="relative w-full h-full">
-            <img
-              src={fullscreenCamera.streamUrl}
-              alt={fullscreenCamera.name}
-              className="w-full h-full object-cover"
-            />
+          <video
+            src={fullscreenCamera.streamUrl}
+            alt={fullscreenCamera.name}
+            className="w-full h-full object-contain"
+            controls
+            autoPlay
+            muted
+            loop
+          />
             <button
               onClick={exitFullscreen}
               className="absolute top-4 right-4 bg-gray-800 text-white px-4 py-2 rounded hover:bg-gray-700"
@@ -85,11 +89,16 @@ const Cameras = () => {
                 camera.status === "online" ? "border-4 border-green-500" : "border-4 border-red-500"
               }`}
             >
-              <img
+              <video
                 src={camera.streamUrl}
                 alt={camera.name}
                 className="w-full h-48 object-cover rounded-lg cursor-pointer"
                 onClick={() => setFullscreenCamera(camera)}
+                muted
+                loop
+                autoPlay
+                playsInline
+                preload="none"
               />
               <h2 className="mt-2 font-semibold text-lg">{camera.name}</h2>
               <p className="text-sm">

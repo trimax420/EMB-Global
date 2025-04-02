@@ -1,155 +1,163 @@
 // src/services/websocketService.js
+
 /**
- * Service for handling real-time WebSocket communication
+ * Service for WebSocket communication
  */
 
 let socket = null;
-const listeners = new Map();
-let reconnectAttempts = 0;
-const MAX_RECONNECT_ATTEMPTS = 5;
-const RECONNECT_DELAY = 3000; // 3 seconds
+let isConnected = false;
+const messageListeners = new Map();
+const reconnectDelay = 3000; // 3 seconds
+let reconnectAttempt = 0;
+const maxReconnectAttempts = 5;
 
 /**
- * Connect to the WebSocket server
- * @returns {Promise<WebSocket>} - WebSocket connection
+ * Connect to WebSocket server
+ * @returns {Promise<WebSocket>} WebSocket connection
  */
 export const connectWebSocket = () => {
   return new Promise((resolve, reject) => {
-    if (socket && socket.readyState === WebSocket.OPEN) {
+    // If already connected, return existing socket
+    if (socket && isConnected) {
       resolve(socket);
       return;
     }
-
+    
+    // Get WebSocket URL from environment or use default
     const wsUrl = import.meta.env.VITE_WS_URL || 'ws://localhost:8000/api/ws';
-    socket = new WebSocket(wsUrl);
-
-    socket.onopen = () => {
-      console.log('WebSocket connection established');
-      reconnectAttempts = 0;
-      resolve(socket);
-    };
-
-    socket.onclose = (event) => {
-      console.log('WebSocket connection closed', event);
+    
+    try {
+      // Create new WebSocket
+      socket = new WebSocket(wsUrl);
       
-      // Attempt to reconnect if not closed deliberately
-      if (!event.wasClean && reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
-        console.log(`Attempting to reconnect (${reconnectAttempts + 1}/${MAX_RECONNECT_ATTEMPTS})...`);
-        reconnectAttempts++;
-        setTimeout(() => {
-          connectWebSocket()
-            .then(newSocket => {
-              socket = newSocket;
-              // Re-register all listeners
-              listeners.forEach((callback, messageType) => {
-                addMessageListener(messageType, callback);
+      // Set up event handlers
+      socket.onopen = () => {
+        console.log('WebSocket connected');
+        isConnected = true;
+        reconnectAttempt = 0;
+        resolve(socket);
+      };
+      
+      socket.onclose = (event) => {
+        console.log('WebSocket disconnected', event);
+        isConnected = false;
+        
+        // Try to reconnect if not closed deliberately
+        if (!event.wasClean && reconnectAttempt < maxReconnectAttempts) {
+          reconnectAttempt++;
+          console.log(`Reconnecting attempt ${reconnectAttempt}/${maxReconnectAttempts}...`);
+          
+          setTimeout(() => {
+            connectWebSocket()
+              .then(newSocket => {
+                socket = newSocket;
+                isConnected = true;
+                console.log('WebSocket reconnected');
+              })
+              .catch(error => {
+                console.error('WebSocket reconnection failed:', error);
               });
-            })
-            .catch(error => console.error('Reconnection failed:', error));
-        }, RECONNECT_DELAY);
-      }
-    };
-
-    socket.onerror = (error) => {
-      console.error('WebSocket error:', error);
+          }, reconnectDelay);
+        }
+      };
+      
+      socket.onerror = (error) => {
+        console.error('WebSocket error:', error);
+        reject(error);
+      };
+      
+      socket.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          const messageType = data.type;
+          
+          // Dispatch to specific message listeners
+          if (messageListeners.has(messageType)) {
+            messageListeners.get(messageType)(data);
+          }
+          
+          // Dispatch to "all" listeners
+          if (messageListeners.has('all')) {
+            messageListeners.get('all')(data);
+          }
+        } catch (error) {
+          console.error('Error parsing WebSocket message:', error);
+        }
+      };
+    } catch (error) {
+      console.error('Error creating WebSocket:', error);
       reject(error);
-    };
-
-    socket.onmessage = (event) => {
-      try {
-        const message = JSON.parse(event.data);
-        const messageType = message.type;
-        
-        if (listeners.has(messageType)) {
-          listeners.get(messageType)(message);
-        }
-        
-        // Also trigger 'all' listeners
-        if (listeners.has('all')) {
-          listeners.get('all')(message);
-        }
-      } catch (error) {
-        console.error('Error parsing WebSocket message:', error);
-      }
-    };
+    }
   });
 };
 
 /**
- * Add a message listener for specific message types
- * @param {string} messageType - Type of message to listen for, or 'all' for all messages
- * @param {Function} callback - Callback function to handle the message
+ * Add a message listener
+ * @param {string} messageType - Type of message to listen for
+ * @param {Function} callback - Callback function
  */
 export const addMessageListener = (messageType, callback) => {
-  listeners.set(messageType, callback);
+  messageListeners.set(messageType, callback);
 };
 
 /**
  * Remove a message listener
- * @param {string} messageType - Type of message to stop listening for
+ * @param {string} messageType - Type of message to remove listener for
  */
 export const removeMessageListener = (messageType) => {
-  listeners.delete(messageType);
+  messageListeners.delete(messageType);
 };
 
 /**
- * Send a message to the WebSocket server
+ * Send a message through WebSocket
  * @param {Object} message - Message to send
  * @returns {Promise<void>}
  */
 export const sendMessage = async (message) => {
-  try {
-    if (!socket || socket.readyState !== WebSocket.OPEN) {
-      await connectWebSocket();
-    }
-    
-    socket.send(JSON.stringify(message));
-  } catch (error) {
-    console.error('Error sending WebSocket message:', error);
-    throw error;
+  // Connect if not already connected
+  if (!socket || !isConnected) {
+    await connectWebSocket();
   }
-};
-
-/**
- * Start camera stream
- * @param {string} cameraId - Camera ID to stream
- * @returns {Promise<void>}
- */
-export const startCameraStream = async (cameraId) => {
-  return sendMessage({
-    type: 'start_stream',
-    camera_id: cameraId
-  });
-};
-
-/**
- * Stop camera stream
- * @param {string} cameraId - Camera ID to stop streaming
- * @returns {Promise<void>}
- */
-export const stopCameraStream = async (cameraId) => {
-  return sendMessage({
-    type: 'stop_stream',
-    camera_id: cameraId
-  });
+  
+  // Send message
+  socket.send(JSON.stringify(message));
 };
 
 /**
  * Close WebSocket connection
  */
 export const closeConnection = () => {
-  if (socket && socket.readyState === WebSocket.OPEN) {
+  if (socket) {
     socket.close();
+    socket = null;
+    isConnected = false;
   }
 };
 
-// Auto-reconnect on window focus if connection was lost
+/**
+ * Get connection status
+ * @returns {boolean} - Whether WebSocket is connected
+ */
+export const getConnectionStatus = () => {
+  return isConnected;
+};
+
+// Setup auto-reconnect when window regains focus
 if (typeof window !== 'undefined') {
   window.addEventListener('focus', () => {
-    if (!socket || socket.readyState !== WebSocket.OPEN) {
+    if (!isConnected) {
       connectWebSocket().catch(error => {
         console.error('Failed to reconnect on window focus:', error);
       });
     }
   });
 }
+
+export default {
+  connectWebSocket,
+  addMessageListener,
+  removeMessageListener,
+  sendMessage,
+  closeConnection,
+  isConnected: getConnectionStatus
+};
