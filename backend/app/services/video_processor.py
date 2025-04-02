@@ -131,94 +131,152 @@ class VideoProcessor:
             return []
 
     async def process_video(self, video_path: str, video_id: int, detection_type: str) -> Dict:
-        """Process video and return detections"""
+        """
+        Process a video file for various detection types with real-time updates.
+        
+        Args:
+            video_path (str): Path to the input video file
+            video_id (int): Unique identifier for the video
+            detection_type (str): Type of detection to perform (e.g., 'theft', 'loitering', 'face_detection')
+        
+        Returns:
+            Dict: Comprehensive processing results including detections, output paths, and metadata
+        """
         try:
-            # Ensure directories exist
+            # Ensure necessary directories exist
             os.makedirs(settings.PROCESSED_DIR, exist_ok=True)
             os.makedirs(settings.THUMBNAILS_DIR, exist_ok=True)
             
-            # Open video
+            # Open video file
             cap = cv2.VideoCapture(video_path)
             if not cap.isOpened():
                 raise ValueError(f"Could not open video: {video_path}")
-                
-            # Get video properties
+            
+            # Extract video metadata
             fps = int(cap.get(cv2.CAP_PROP_FPS))
             width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
             height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
             total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
             
-            # Create output video writer
+            # Prepare output video writer
             output_path = settings.PROCESSED_DIR / f"processed_{video_id}.mp4"
             fourcc = cv2.VideoWriter_fourcc(*'XVID')
             out = cv2.VideoWriter(str(output_path), fourcc, fps, (width, height))
             
-            # Process frames
+            # Initialize processing variables
             frame_number = 0
             detections = []
             thumbnail_saved = False
+            last_progress_update = 0
             
+            # Process video frames
             while cap.isOpened():
+                # Read frame
                 ret, frame = cap.read()
                 if not ret:
                     break
                 
                 # Process every Nth frame to improve performance
                 if frame_number % settings.SKIP_FRAMES == 0:
-                    # Get detections for the current frame
-                    frame_detections = await self.process_frame(frame, detection_type)
+                    # Convert frame to RGB for AI models
+                    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                     
-                    # Add frame number to detections
-                    for det in frame_detections:
-                        det["frame_number"] = frame_number
-                        detections.append(det)
+                    try:
+                        # Perform detection based on detection type
+                        frame_detections = await self._detect_in_frame(
+                            frame_rgb, 
+                            detection_type
+                        )
+                        
+                        # Add frame number to detections
+                        for det in frame_detections:
+                            det["frame_number"] = frame_number
+                            detections.append(det)
+                        
+                        # Draw detection boxes on frame
+                        for det in frame_detections:
+                            x1, y1, x2, y2 = map(int, det["bbox"])
+                            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                            label = f"{det.get('class_name', 'Object')} {det.get('confidence', 0):.2f}"
+                            cv2.putText(frame, label, (x1, y1-10), 
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                        
+                        # Save thumbnail for the first processed frame
+                        if not thumbnail_saved:
+                            thumbnail_path = settings.THUMBNAILS_DIR / f"thumb_{video_id}.jpg"
+                            cv2.imwrite(str(thumbnail_path), frame)
+                            thumbnail_saved = True
+                        
+                        # Broadcast detections via WebSocket
+                        for detection in frame_detections:
+                            await manager.broadcast(json.dumps({
+                                "type": "detection",
+                                "video_id": video_id,
+                                "detection": detection
+                            }))
                     
-                    # Draw detections on frame
-                    for det in frame_detections:
-                        x1, y1, x2, y2 = map(int, det["bbox"])
-                        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                        label = f"{det['class_name']} {det['confidence']:.2f}"
-                        cv2.putText(frame, label, (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-                    
-                    # Save thumbnail if not yet saved
-                    if not thumbnail_saved:
-                        thumbnail_path = settings.THUMBNAILS_DIR / f"thumb_{video_id}.jpg"
-                        cv2.imwrite(str(thumbnail_path), frame)
-                        thumbnail_saved = True
+                    except Exception as detection_error:
+                        logger.error(f"Detection error: {str(detection_error)}")
                 
-                # Write processed frame
+                # Write processed frame to output video
                 out.write(frame)
                 frame_number += 1
                 
-                # Report progress periodically
-                if frame_number % 30 == 0:  # Update every 30 frames
+                # Periodic progress updates via WebSocket
+                if frame_number % 30 == 0:
                     progress = (frame_number / total_frames) * 100
-                    await manager.broadcast(json.dumps({
-                        "type": "processing_progress",
-                        "video_id": video_id,
-                        "progress": progress
-                    }))
+                    
+                    # Avoid too frequent updates
+                    if progress - last_progress_update >= 5:
+                        await manager.broadcast(json.dumps({
+                            "type": "processing_progress",
+                            "video_id": video_id,
+                            "progress": progress,
+                            "total_frames": total_frames
+                        }))
+                        last_progress_update = progress
             
-            # Release resources
+            # Release video resources
             cap.release()
             out.release()
             
-            # If we didn't save a thumbnail yet, use the last frame
+            # Ensure thumbnail is saved if not already done
             if not thumbnail_saved and frame is not None:
                 thumbnail_path = settings.THUMBNAILS_DIR / f"thumb_{video_id}.jpg"
                 cv2.imwrite(str(thumbnail_path), frame)
             
-            return {
+            # Prepare and return processing results
+            processing_results = {
+                "video_id": video_id,
                 "output_path": str(output_path),
                 "thumbnail_path": str(thumbnail_path) if thumbnail_saved else None,
                 "detections": detections,
                 "total_frames": frame_number,
                 "fps": fps,
-                "resolution": f"{width}x{height}"
+                "resolution": f"{width}x{height}",
+                "detection_type": detection_type
             }
             
+            # Final broadcast of processing completion
+            await manager.broadcast(json.dumps({
+                "type": "processing_completed",
+                "video_id": video_id,
+                "results": processing_results
+            }))
+            
+            return processing_results
+        
         except Exception as e:
-            logger.error(f"Error processing video: {str(e)}")
+            # Handle and log any unexpected errors
+            logger.error(f"Error processing video {video_id}: {str(e)}")
+            
+            # Broadcast error message
+            await manager.broadcast(json.dumps({
+                "type": "processing_error",
+                "video_id": video_id,
+                "error": str(e)
+            }))
+            
             raise
 
     async def process_loitering_detection_smooth(self, video_path, output_path, camera_id=None, threshold_time=10):
