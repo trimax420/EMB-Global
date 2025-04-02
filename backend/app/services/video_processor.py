@@ -11,7 +11,7 @@ from pathlib import Path
 from datetime import datetime
 from typing import List, Dict, Optional, Tuple
 from ..core.config import settings
-from ..core.websocket import manager
+from ..core.websocket import websocket_manager
 import face_recognition
 import pickle
 import uuid

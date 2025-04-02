@@ -41,7 +41,7 @@ from database import (
 )
 
 # Import schemas
-from .models.schemas import (
+from app.models.schemas import (
     VideoInfo, 
     DetectionInfo, 
     IncidentInfo, 
