@@ -1,12 +1,45 @@
 import React, { useState, useEffect } from 'react';
 import * as XLSX from 'xlsx';
-import { getDailyReport } from '../services/api';
 
 const DailyReport = () => {
+  // Dummy data for daily report
+  const dummyData = [
+    {
+      date: '2025-03-18',
+      totalEntries: 500,
+      totalPurchases: 200,
+      noPurchase: 300,
+      peakHour: '12 PM - 1 PM',
+      averageTimeSpent: '25 minutes'
+    },
+    {
+      date: '2023-10-09',
+      totalEntries: 450,
+      totalPurchases: 180,
+      noPurchase: 270,
+      peakHour: '3 PM - 4 PM',
+      averageTimeSpent: '20 minutes'
+    }
+  ];
+
+  // Hourly breakdown data for the selected date
+  const hourlyData = [
+    { hour: '6 AM', entries: 20, purchases: 10 },
+    { hour: '7 AM', entries: 30, purchases: 15 },
+    { hour: '8 AM', entries: 40, purchases: 20 },
+    { hour: '9 AM', entries: 50, purchases: 25 },
+    { hour: '10 AM', entries: 60, purchases: 30 },
+    { hour: '11 AM', entries: 70, purchases: 35 },
+    { hour: '12 PM', entries: 80, purchases: 40 },
+    { hour: '1 PM', entries: 90, purchases: 45 },
+    { hour: '2 PM', entries: 50, purchases: 25 },
+    { hour: '3 PM', entries: 40, purchases: 20 },
+    { hour: '4 PM', entries: 30, purchases: 15 },
+    { hour: '5 PM', entries: 20, purchases: 10 }
+  ];
+
   const [selectedDate, setSelectedDate] = useState('');
   const [reportData, setReportData] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
 
   // Get today's date in YYYY-MM-DD format
   const getTodayDate = () => {
@@ -17,70 +50,48 @@ const DailyReport = () => {
     return `${year}-${month}-${day}`;
   };
 
-  // Load report data
+  // Load today's report on page load
   useEffect(() => {
-    const fetchReport = async () => {
-      try {
-        setLoading(true);
-        const today = getTodayDate();
-        setSelectedDate(today);
-        const data = await getDailyReport(today);
-        setReportData(data);
-      } catch (err) {
-        setError(err.message);
-        console.error('Error fetching report:', err);
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    fetchReport();
+    const today = getTodayDate();
+    setSelectedDate(today);
+    const foundData = dummyData.find((item) => item.date === today);
+    setReportData(foundData);
   }, []);
 
   // Handle date selection
-  const handleDateChange = async (e) => {
+  const handleDateChange = (e) => {
     const date = e.target.value;
     setSelectedDate(date);
-    try {
-      setLoading(true);
-      const data = await getDailyReport(date);
-      setReportData(data);
-    } catch (err) {
-      setError(err.message);
-      console.error('Error fetching report:', err);
-    } finally {
-      setLoading(false);
-    }
+    const foundData = dummyData.find((item) => item.date === date);
+    setReportData(foundData);
   };
 
-  // Export report as Excel
+  // Export report as CSV
   const handleExport = () => {
-    if (!reportData) return;
-
     const exportData = [
       {
         Metric: 'Total Entries',
-        Value: reportData.total_entries
+        Value: reportData?.totalEntries || '-'
       },
       {
         Metric: 'Total Purchases',
-        Value: reportData.total_purchases
+        Value: reportData?.totalPurchases || '-'
       },
       {
         Metric: 'No Purchase',
-        Value: reportData.no_purchase
+        Value: reportData?.noPurchase || '-'
       },
       {
         Metric: 'Peak Hour',
-        Value: reportData.peak_hour
+        Value: reportData?.peakHour || '-'
       },
       {
         Metric: 'Average Time Spent',
-        Value: reportData.average_time_spent
+        Value: reportData?.averageTimeSpent || '-'
       },
       {}, // Empty row for separation
       { Hour: 'Hour', Entries: 'Entries', Purchases: 'Purchases' },
-      ...reportData.hourly_breakdown.map((entry) => ({
+      ...hourlyData.map((entry) => ({
         Hour: entry.hour,
         Entries: entry.entries,
         Purchases: entry.purchases
@@ -90,16 +101,8 @@ const DailyReport = () => {
     const worksheet = XLSX.utils.json_to_sheet(exportData);
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, 'Daily Report');
-    XLSX.writeFile(workbook, `daily_report_${selectedDate}.xlsx`);
+    XLSX.writeFile(workbook, `daily_report_${selectedDate}.csv`);
   };
-
-  if (loading) {
-    return <div className="p-6">Loading report data...</div>;
-  }
-
-  if (error) {
-    return <div className="p-6 text-red-500">Error: {error}</div>;
-  }
 
   return (
     <div className="p-6">
@@ -109,7 +112,6 @@ const DailyReport = () => {
         <button
           onClick={handleExport}
           className="bg-green-500 text-white px-4 py-2 rounded hover:bg-green-600"
-          disabled={!reportData}
         >
           Export Report
         </button>
@@ -128,58 +130,58 @@ const DailyReport = () => {
         />
       </div>
 
+      {/* Metrics Summary */}
       {reportData && (
-        <>
-          {/* Metrics Summary */}
-          <div className="mb-6 p-6 bg-white border border-gray-300 rounded shadow">
-            <h2 className="text-xl font-semibold mb-4">Summary for {selectedDate}</h2>
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <p className="text-gray-600">Total Entries:</p>
-                <p className="font-bold">{reportData.total_entries}</p>
-              </div>
-              <div>
-                <p className="text-gray-600">Total Purchases:</p>
-                <p className="font-bold">{reportData.total_purchases}</p>
-              </div>
-              <div>
-                <p className="text-gray-600">No Purchase:</p>
-                <p className="font-bold">{reportData.no_purchase}</p>
-              </div>
-              <div>
-                <p className="text-gray-600">Peak Hour:</p>
-                <p className="font-bold">{reportData.peak_hour}</p>
-              </div>
-              <div>
-                <p className="text-gray-600">Average Time Spent:</p>
-                <p className="font-bold">{reportData.average_time_spent}</p>
-              </div>
+        <div className="mb-6 p-6 bg-white border border-gray-300 rounded shadow">
+          <h2 className="text-xl font-semibold mb-4">Summary for {reportData.date}</h2>
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <p className="text-gray-600">Total Entries:</p>
+              <p className="font-bold">{reportData.totalEntries}</p>
+            </div>
+            <div>
+              <p className="text-gray-600">Total Purchases:</p>
+              <p className="font-bold">{reportData.totalPurchases}</p>
+            </div>
+            <div>
+              <p className="text-gray-600">No Purchase:</p>
+              <p className="font-bold">{reportData.noPurchase}</p>
+            </div>
+            <div>
+              <p className="text-gray-600">Peak Hour:</p>
+              <p className="font-bold">{reportData.peakHour}</p>
+            </div>
+            <div>
+              <p className="text-gray-600">Average Time Spent:</p>
+              <p className="font-bold">{reportData.averageTimeSpent}</p>
             </div>
           </div>
+        </div>
+      )}
 
-          {/* Hourly Breakdown Table */}
-          <div className="overflow-x-auto">
-            <h2 className="text-xl font-semibold mb-4">Hourly Breakdown</h2>
-            <table className="min-w-full text-left bg-white border border-gray-300">
-              <thead>
-                <tr className="bg-gray-100">
-                  <th className="py-2 px-4 border-b">Hour</th>
-                  <th className="py-2 px-4 border-b">Entries</th>
-                  <th className="py-2 px-4 border-b">Purchases</th>
+      {/* Hourly Breakdown Table */}
+      {reportData && (
+        <div className="overflow-x-auto">
+          <h2 className="text-xl font-semibold mb-4">Hourly Breakdown</h2>
+          <table className="min-w-full text-left bg-white border border-gray-300">
+            <thead>
+              <tr className="bg-gray-100">
+                <th className="py-2 px-4 border-b">Hour</th>
+                <th className="py-2 px-4 border-b">Entries</th>
+                <th className="py-2 px-4 border-b">Purchases</th>
+              </tr>
+            </thead>
+            <tbody>
+              {hourlyData.map((entry, index) => (
+                <tr key={index} className="hover:bg-gray-50">
+                  <td className="py-2 px-4 border-b">{entry.hour}</td>
+                  <td className="py-2 px-4 border-b">{entry.entries}</td>
+                  <td className="py-2 px-4 border-b">{entry.purchases}</td>
                 </tr>
-              </thead>
-              <tbody>
-                {reportData.hourly_breakdown.map((entry, index) => (
-                  <tr key={index} className="hover:bg-gray-50">
-                    <td className="py-2 px-4 border-b">{entry.hour}</td>
-                    <td className="py-2 px-4 border-b">{entry.entries}</td>
-                    <td className="py-2 px-4 border-b">{entry.purchases}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   );

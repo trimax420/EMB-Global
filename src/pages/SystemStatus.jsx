@@ -1,84 +1,39 @@
-import React, { useState, useEffect } from 'react';
-import { getSystemStatus } from '../services/api';
+import React from 'react';
 
 const SystemStatusPage = () => {
-  const [systemData, setSystemData] = useState({
-    cameras: [],
-    modelPerformance: {
-      is_working: false,
-      accuracy: '0%',
-      true_positives: 0,
-      false_positives: 0
-    },
-    frameSkipping: []
-  });
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
+  // Dummy data for cameras
+  const cameras = [
+    { id: 1, name: 'Camera A', status: 'Online', fps: 30, lastActive: '2023-10-10T10:00:00' },
+    { id: 2, name: 'Camera B', status: 'Offline', fps: 0, lastActive: '2023-10-09T15:45:00' },
+    { id: 3, name: 'Camera C', status: 'Online', fps: 25, lastActive: '2023-10-10T11:30:00' }
+  ];
 
-  useEffect(() => {
-    const fetchSystemStatus = async () => {
-      try {
-        setLoading(true);
-        const response = await getSystemStatus();
-        console.log('System status response:', response); // Debug log
-        
-        // Ensure we have all required data with defaults
-        setSystemData({
-          cameras: response.cameras || [],
-          modelPerformance: {
-            is_working: response.model_performance?.is_working || false,
-            accuracy: response.model_performance?.accuracy || '0%',
-            true_positives: response.model_performance?.true_positives || 0,
-            false_positives: response.model_performance?.false_positives || 0
-          },
-          frameSkipping: response.frame_skipping || []
-        });
-      } catch (err) {
-        console.error('Error fetching system status:', err);
-        setError(err.message || 'Failed to fetch system status');
-      } finally {
-        setLoading(false);
-      }
-    };
+  // Dummy data for model performance
+  const modelPerformance = {
+    isWorking: true,
+    truePositives: 1200,
+    falsePositives: 15,
+    missedDetections: 5,
+    accuracy: '98.5%'
+  };
 
-    fetchSystemStatus();
-
-    // Set up polling interval
-    const interval = setInterval(fetchSystemStatus, 30000); // Poll every 30 seconds
-
-    // Cleanup interval on component unmount
-    return () => clearInterval(interval);
-  }, []);
+  // Dummy data for frame skipping with camera details
+  const frameSkipping = [
+    { id: 1, cameraId: 1, timestamp: '2023-10-10T09:00:00', skippedFrames: 5 },
+    { id: 2, cameraId: 2, timestamp: '2023-10-10T10:15:00', skippedFrames: 3 },
+    { id: 3, cameraId: 3, timestamp: '2023-10-10T12:00:00', skippedFrames: 2 }
+  ];
 
   // Helper function to determine status color
   const getStatusColor = (status) => {
-    return status?.toLowerCase() === 'online' ? 'bg-green-500' : 'bg-red-500';
+    return status === 'Online' ? 'bg-green-500' : 'bg-red-500';
   };
 
   // Helper function to get camera name by id
   const getCameraNameById = (id) => {
-    const camera = systemData.cameras.find((camera) => camera.id === id);
+    const camera = cameras.find((camera) => camera.id === id);
     return camera ? camera.name : 'Unknown Camera';
   };
-
-  if (loading) {
-    return (
-      <div className="p-6 flex items-center justify-center">
-        <div className="text-lg text-gray-600">Loading system status...</div>
-      </div>
-    );
-  }
-
-  if (error) {
-    return (
-      <div className="p-6">
-        <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded">
-          <p className="font-bold">Error</p>
-          <p>{error}</p>
-        </div>
-      </div>
-    );
-  }
 
   return (
     <div className="p-6">
@@ -97,32 +52,28 @@ const SystemStatusPage = () => {
                 <th className="py-2 px-4 border-b">Camera Name</th>
                 <th className="py-2 px-4 border-b">Status</th>
                 <th className="py-2 px-4 border-b">FPS</th>
+                <th className="py-2 px-4 border-b">Last Active</th>
               </tr>
             </thead>
             <tbody>
-              {systemData.cameras.length > 0 ? (
-                systemData.cameras.map((camera) => (
-                  <tr key={camera.id} className="hover:bg-gray-50">
-                    <td className="py-2 px-4 border-b">{camera.name}</td>
-                    <td className="py-2 px-4 border-b">
-                      <span
-                        className={`inline-block px-2 py-1 rounded text-white ${getStatusColor(
-                          camera.status
-                        )}`}
-                      >
-                        {camera.status}
-                      </span>
-                    </td>
-                    <td className="py-2 px-4 border-b">{camera.fps}</td>
-                  </tr>
-                ))
-              ) : (
-                <tr>
-                  <td colSpan="3" className="py-4 text-center text-gray-500">
-                    No cameras available
+              {cameras.map((camera) => (
+                <tr key={camera.id} className="hover:bg-gray-50">
+                  <td className="py-2 px-4 border-b">{camera.name}</td>
+                  <td className="py-2 px-4 border-b">
+                    <span
+                      className={`inline-block px-2 py-1 rounded text-white ${getStatusColor(
+                        camera.status
+                      )}`}
+                    >
+                      {camera.status}
+                    </span>
+                  </td>
+                  <td className="py-2 px-4 border-b">{camera.fps}</td>
+                  <td className="py-2 px-4 border-b">
+                    {new Date(camera.lastActive).toLocaleString()}
                   </td>
                 </tr>
-              )}
+              ))}
             </tbody>
           </table>
         </div>
@@ -134,24 +85,26 @@ const SystemStatusPage = () => {
         <div className="grid grid-cols-2 gap-4 p-6 bg-white border border-gray-300 rounded shadow">
           <div>
             <p className="text-gray-600">True Positives:</p>
-            <p className="font-bold">{systemData.modelPerformance.true_positives}</p>
+            <p className="font-bold">{modelPerformance.truePositives}</p>
           </div>
           <div>
             <p className="text-gray-600">False Positives:</p>
-            <p className="font-bold">{systemData.modelPerformance.false_positives}</p>
+            <p className="font-bold">{modelPerformance.falsePositives}</p>
+          </div>
+          <div>
+            <p className="text-gray-600">Missed Detections:</p>
+            <p className="font-bold">{modelPerformance.missedDetections}</p>
           </div>
           <div>
             <p className="text-gray-600">Accuracy:</p>
-            <p className="font-bold">{systemData.modelPerformance.accuracy}</p>
+            <p className="font-bold">{modelPerformance.accuracy}</p>
           </div>
-          <div>
+          <div colSpan="2">
             <p className="text-gray-600">Model Status:</p>
             <span
-              className={`inline-block px-2 py-1 rounded text-white ${
-                systemData.modelPerformance.is_working ? 'bg-green-500' : 'bg-red-500'
-              }`}
+              className={`inline-block px-2 py-1 rounded text-white ${modelPerformance.isWorking ? 'bg-green-500' : 'bg-red-500'}`}
             >
-              {systemData.modelPerformance.is_working ? 'Working Properly' : 'Not Working'}
+              {modelPerformance.isWorking ? 'Working Properly' : 'Not Working'}
             </span>
           </div>
         </div>
@@ -165,30 +118,24 @@ const SystemStatusPage = () => {
             <thead>
               <tr className="bg-gray-100 text-left">
                 <th className="py-2 px-4 border-b">Camera Name</th>
+                <th className="py-2 px-4 border-b">Timestamp</th>
                 <th className="py-2 px-4 border-b">Skipped Frames</th>
                 <th className="py-2 px-4 border-b">Details</th>
               </tr>
             </thead>
             <tbody>
-              {systemData.frameSkipping.length > 0 ? (
-                systemData.frameSkipping.map((frame) => (
-                  <tr key={frame.id} className="hover:bg-gray-50">
-                    <td className="py-2 px-4 border-b">{getCameraNameById(frame.camera_id)}</td>
-                    <td className="py-2 px-4 border-b">{frame.skipped_frames}</td>
-                    <td className="py-2 px-4 border-b">
-                      <span className="text-gray-500">
-                        Possible cause: Network instability or camera overload.
-                      </span>
-                    </td>
-                  </tr>
-                ))
-              ) : (
-                <tr>
-                  <td colSpan="3" className="py-4 text-center text-gray-500">
-                    No frame skipping data available
+              {frameSkipping.map((frame) => (
+                <tr key={frame.id} className="hover:bg-gray-50">
+                  <td className="py-2 px-4 border-b">{getCameraNameById(frame.cameraId)}</td>
+                  <td className="py-2 px-4 border-b">
+                    {new Date(frame.timestamp).toLocaleString()}
+                  </td>
+                  <td className="py-2 px-4 border-b">{frame.skippedFrames}</td>
+                  <td className="py-2 px-4 border-b">
+                    <span className="text-gray-500">Possible cause: Network instability or camera overload.</span>
                   </td>
                 </tr>
-              )}
+              ))}
             </tbody>
           </table>
         </div>

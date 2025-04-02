@@ -9,21 +9,20 @@ import { PiCameraBold } from 'react-icons/pi';         // Live Feed icon (Camera
 import { PiClipboardTextBold } from 'react-icons/pi';   // Data Collection icon
 import { PiChartBarBold } from 'react-icons/pi';        // Daily Report icon
 import { PiBellBold } from 'react-icons/pi';            // Alerts icon
-import { MdSettings, MdAttachMoney, MdSecurity, MdPeople } from 'react-icons/md';
+import { MdSettings,MdAttachMoney  } from 'react-icons/md';
 
 function Sidebar({ isSidebarExpanded, toggleSidebar }) {
   const location = useLocation(); // Get the current location
 
   const SIDEBAR_LINKS = [
     { id: 1, path: '/', name: 'Dashboard', icon: MdOutlineDashboard },
-    { id: 2, path: '/security-dashboard', name: 'Security Dashboard', icon: MdSecurity },
-    { id: 3, path: '/Live-Feed', name: 'Live Feed', icon: PiCameraBold },
-    { id: 4, path: '/customer-demographics', name: 'Customer Analysis', icon: MdPeople },
-    { id: 5, path: '/datacollection', name: 'Data Collection', icon: PiClipboardTextBold },
-    { id: 6, path: '/dailyreport', name: 'Daily Report', icon: PiChartBarBold },
-    { id: 7, path: '/alerts', name: 'Alerts', icon: PiBellBold },
-    { id: 8, path: '/System-Status', name: 'System Status', icon: MdSettings },
-    { id: 9, path: '/BillingActivityPage', name: 'POS', icon: MdAttachMoney },
+    // { id: 2, path: '/Live-Feed', name: 'Live Feed', icon: PiCameraBold },
+    // { id: 3, path: '/datacollection', name: 'Data Collection', icon: PiClipboardTextBold },
+    // { id: 4, path: '/dailyreport', name: 'Daily Report', icon: PiChartBarBold },
+    { id: 5, path: '/alerts', name: 'Alerts', icon: PiBellBold },
+    { id: 5, path: '/suspectlist', name: 'Suspectlist', icon: PiCameraBold },
+    // { id: 6, path: '/System-Status', name: 'System Status', icon: MdSettings },
+    // { id: 6, path: '/BillingActivityPage', name: 'POS', icon: MdAttachMoney },
   ];
 
   // Mock user data

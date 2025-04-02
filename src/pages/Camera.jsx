@@ -1,155 +1,27 @@
-import React, { useState, useEffect, useRef } from "react";
-import { cameraService } from "../services/api";
-import { BACKEND_URL, WS_URL, WS_ENDPOINTS } from '../config';
+import React, { useState } from "react";
 
 const Cameras = () => {
   const [filter, setFilter] = useState("all");
   const [fullscreenCamera, setFullscreenCamera] = useState(null);
-  const [cameras, setCameras] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
-  const [currentFrames, setCurrentFrames] = useState({});
-  const [currentDetections, setCurrentDetections] = useState({});
-  const wsRefs = useRef({});
 
-  useEffect(() => {
-    const fetchCameras = async () => {
-      try {
-        setLoading(true);
-        const data = await cameraService.getAllCameras();
-        setCameras(data);
-        
-        // Initialize WebSocket connections for each camera
-        data.forEach(camera => {
-          if (!wsRefs.current[camera.id]) {
-            const ws = new WebSocket(`${WS_URL}${WS_ENDPOINTS.live}`);
-            
-            ws.onopen = () => {
-              console.log(`WebSocket connected for camera ${camera.id}`);
-              // Start streaming for this camera
-              ws.send(JSON.stringify({
-                type: 'start_stream',
-                camera_id: camera.id
-              }));
-            };
-
-            ws.onmessage = (event) => {
-              try {
-                const data = JSON.parse(event.data);
-                if (data.type === 'live_detection' && data.camera_id === camera.id) {
-                  // Update frame
-                  setCurrentFrames(prev => ({
-                    ...prev,
-                    [camera.id]: data.frame
-                  }));
-                  
-                  // Update detections
-                  if (data.detections) {
-                    setCurrentDetections(prev => ({
-                      ...prev,
-                      [camera.id]: data.detections
-                    }));
-                  }
-                }
-              } catch (error) {
-                console.error(`Error processing message for camera ${camera.id}:`, error);
-              }
-            };
-
-            ws.onerror = (error) => {
-              console.error(`WebSocket error for camera ${camera.id}:`, error);
-            };
-
-            ws.onclose = () => {
-              console.log(`WebSocket closed for camera ${camera.id}`);
-              // Attempt to reconnect after a delay
-              setTimeout(() => {
-                if (wsRefs.current[camera.id]) {
-                  wsRefs.current[camera.id].close();
-                  delete wsRefs.current[camera.id];
-                }
-              }, 5000);
-            };
-
-            wsRefs.current[camera.id] = ws;
-          }
-        });
-      } catch (err) {
-        setError(err.message);
-        console.error('Error fetching cameras:', err);
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    fetchCameras();
-
-    // Cleanup function
-    return () => {
-      // Close all WebSocket connections
-      Object.values(wsRefs.current).forEach(ws => {
-        if (ws && ws.readyState === WebSocket.OPEN) {
-          ws.close();
-        }
-      });
-    };
-  }, []);
+  // Dummy camera data
+  const cameraList = [
+    { id: 1, name: "Front Entrance", status: "online", streamUrl: "https://developer-blogs.nvidia.com/wp-content/uploads/2022/12/Figure8-output_blurred-compressed.gif" },
+    { id: 2, name: "Main Hall", status: "online", streamUrl: "https://user-images.githubusercontent.com/11428131/139924111-58637f2e-f2f6-42d8-8812-ab42fece92b4.gif" },
+    { id: 3, name: "Zone 2", status: "online", streamUrl: "https://developer-blogs.nvidia.com/wp-content/uploads/2024/05/gif-people-in-store-bounding-boxes.gif" },
+    { id: 4, name: "Parking Lot", status: "offline", streamUrl: "" },
+  ];
 
   // Filter cameras based on status
   const filteredCameras =
     filter === "all"
-      ? cameras
-      : cameras.filter((camera) => camera.status === filter);
+      ? cameraList
+      : cameraList.filter((camera) => camera.status === filter);
 
   // Exit fullscreen mode
   const exitFullscreen = () => {
     setFullscreenCamera(null);
   };
-
-  // Render camera feed with detections
-  const renderCameraFeed = (camera) => {
-    const frame = currentFrames[camera.id];
-    const detections = currentDetections[camera.id] || [];
-
-    return (
-      <div className="relative aspect-video bg-black rounded-lg overflow-hidden">
-        {frame ? (
-          <div className="relative w-full h-full">
-            <img
-              src={`data:image/jpeg;base64,${frame}`}
-              alt={camera.name}
-              className="w-full h-full object-contain"
-            />
-            {/* Display detections */}
-            {detections.map((detection, index) => (
-              <div
-                key={index}
-                className="absolute px-2 py-1 bg-black bg-opacity-50 text-white rounded text-sm"
-                style={{
-                  left: `${detection.bbox ? detection.bbox[0] : 0}px`,
-                  top: `${detection.bbox ? detection.bbox[1] : 0}px`,
-                }}
-              >
-                {detection.class_name}: {(detection.confidence * 100).toFixed(1)}%
-              </div>
-            ))}
-          </div>
-        ) : (
-          <div className="absolute inset-0 flex items-center justify-center text-white">
-            Loading feed...
-          </div>
-        )}
-      </div>
-    );
-  };
-
-  if (loading) {
-    return <div className="p-6">Loading cameras...</div>;
-  }
-
-  if (error) {
-    return <div className="p-6 text-red-500">Error: {error}</div>;
-  }
 
   return (
     <div className="p-6">
@@ -188,7 +60,11 @@ const Cameras = () => {
       {fullscreenCamera && (
         <div className="fixed inset-0 bg-black z-50 flex items-center justify-center">
           <div className="relative w-full h-full">
-            {renderCameraFeed(fullscreenCamera)}
+            <img
+              src={fullscreenCamera.streamUrl}
+              alt={fullscreenCamera.name}
+              className="w-full h-full object-cover"
+            />
             <button
               onClick={exitFullscreen}
               className="absolute top-4 right-4 bg-gray-800 text-white px-4 py-2 rounded hover:bg-gray-700"
@@ -205,12 +81,16 @@ const Cameras = () => {
           {filteredCameras.map((camera) => (
             <div
               key={camera.id}
-              className={`relative bg-gray-50 p-4 rounded-lg shadow-md cursor-pointer ${
+              className={`relative bg-gray-50 p-4 rounded-lg shadow-md ${
                 camera.status === "online" ? "border-4 border-green-500" : "border-4 border-red-500"
               }`}
-              onClick={() => setFullscreenCamera(camera)}
             >
-              {renderCameraFeed(camera)}
+              <img
+                src={camera.streamUrl}
+                alt={camera.name}
+                className="w-full h-48 object-cover rounded-lg cursor-pointer"
+                onClick={() => setFullscreenCamera(camera)}
+              />
               <h2 className="mt-2 font-semibold text-lg">{camera.name}</h2>
               <p className="text-sm">
                 Status:{" "}
