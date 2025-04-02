@@ -19,12 +19,12 @@ import json
 from datetime import datetime, timedelta
 
 # Import core modules
-from core.config import settings
-from core.websocket import websocket_manager
+from app.core.config import settings
+from app.core.websocket import websocket_manager
 
 # Import services
-from services.video_processor import video_processor
-from services.face_recognition import face_recognition_service
+from app.services.video_processor import video_processor
+from app.services.face_recognition import face_recognition_service
 
 # Import database operations
 from database import (
