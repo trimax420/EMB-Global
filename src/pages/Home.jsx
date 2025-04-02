@@ -1,14 +1,20 @@
 import React, { useState, useEffect } from 'react';
 import { 
-  CiCamera, 
-  ImNotification, 
-  TbActivityHeartbeat, 
-  FaUserGroup, 
+  FaCamera, 
+  FaUsers, 
+  FaBell, 
+  FaChartBar, 
   FaExclamationTriangle, 
   FaEye, 
   FaHistory, 
-  FaTimes 
-} from "react-icons/fa6";
+  FaTimes,
+  FaUserClock,
+  FaUserNinja,
+  FaListAlt,
+  FaExclamation
+} from "react-icons/fa";
+import { ImNotification } from "react-icons/im";
+import { TbActivityHeartbeat } from "react-icons/tb";
 import { Bar, Line, Pie } from 'react-chartjs-2';
 import { Chart as ChartJS, CategoryScale, LinearScale, BarElement, LineElement, PointElement, ArcElement, Title, Tooltip, Legend } from 'chart.js';
 import { useNavigate } from 'react-router-dom';
@@ -69,8 +75,8 @@ const cameras = [
 const timeFilterData = {
   today: {
     stats: [
-      { icon: <CiCamera />, title: "Total Cameras", value: "5", description: "4 offline, 8 online", trend: "neutral" },
-      { icon: <FaUserGroup />, title: "Active Detections", value: "25", description: "+15% from last hour", trend: "up" },
+      { icon: <FaCamera />, title: "Total Cameras", value: "5", description: "4 offline, 8 online", trend: "neutral" },
+      { icon: <FaUsers />, title: "Active Detections", value: "25", description: "+15% from last hour", trend: "up" },
       { icon: <ImNotification />, title: "Current Alerts", value: "7", description: "+2 new alerts", trend: "up" },
       { icon: <TbActivityHeartbeat />, title: "System Status", value: "Optimal", description: "All systems operational", trend: "neutral" },
     ],
