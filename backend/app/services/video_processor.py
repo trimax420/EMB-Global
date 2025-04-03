@@ -11,7 +11,7 @@ from pathlib import Path
 from datetime import datetime
 from typing import List, Dict, Optional, Tuple
 from ..core.config import settings
-from ..core.websocket import websocket_manager
+# from ..core.websocket import websocket_manager
 import face_recognition
 import pickle
 import uuid
@@ -208,12 +208,12 @@ class VideoProcessor:
                             thumbnail_saved = True
                         
                         # Broadcast detections via WebSocket
-                        for detection in frame_detections:
-                            await manager.broadcast(json.dumps({
-                                "type": "detection",
-                                "video_id": video_id,
-                                "detection": detection
-                            }))
+                        # for detection in frame_detections:
+                        #     await manager.broadcast(json.dumps({
+                        #         "type": "detection",
+                        #         "video_id": video_id,
+                        #         "detection": detection
+                        #     }))
                     
                     except Exception as detection_error:
                         logger.error(f"Detection error: {str(detection_error)}")
@@ -227,14 +227,14 @@ class VideoProcessor:
                     progress = (frame_number / total_frames) * 100
                     
                     # Avoid too frequent updates
-                    if progress - last_progress_update >= 5:
-                        await manager.broadcast(json.dumps({
-                            "type": "processing_progress",
-                            "video_id": video_id,
-                            "progress": progress,
-                            "total_frames": total_frames
-                        }))
-                        last_progress_update = progress
+                    # if progress - last_progress_update >= 5:
+                    #     await manager.broadcast(json.dumps({
+                    #         "type": "processing_progress",
+                    #         "video_id": video_id,
+                    #         "progress": progress,
+                    #         "total_frames": total_frames
+                    #     }))
+                    #     last_progress_update = progress
             
             # Release video resources
             cap.release()
@@ -258,11 +258,11 @@ class VideoProcessor:
             }
             
             # Final broadcast of processing completion
-            await manager.broadcast(json.dumps({
-                "type": "processing_completed",
-                "video_id": video_id,
-                "results": processing_results
-            }))
+            # await manager.broadcast(json.dumps({
+            #     "type": "processing_completed",
+            #     "video_id": video_id,
+            #     "results": processing_results
+            # }))
             
             return processing_results
         
@@ -271,11 +271,11 @@ class VideoProcessor:
             logger.error(f"Error processing video {video_id}: {str(e)}")
             
             # Broadcast error message
-            await manager.broadcast(json.dumps({
-                "type": "processing_error",
-                "video_id": video_id,
-                "error": str(e)
-            }))
+            # await manager.broadcast(json.dumps({
+            #     "type": "processing_error",
+            #     "video_id": video_id,
+            #     "error": str(e)
+            # }))
             
             raise
 

@@ -17,10 +17,16 @@ import os
 import uuid
 import json
 from datetime import datetime, timedelta
+from fastapi import APIRouter
 
+# Import existing routers
+from .endpoints.video import router as video_router
+from .endpoints.face_tracking import router as face_tracking_router
+# Import our new detection router
+from .endpoints.detection import router as detection_router
 # Import core modules
 from app.core.config import settings
-from app.core.websocket import websocket_manager
+# from app.core.websocket import websocket_manager
 
 # Import services
 from app.services.video_processor import video_processor
@@ -72,7 +78,8 @@ router.mount("/processed", StaticFiles(directory=str(settings.PROCESSED_DIR)), n
 router.mount("/frames", StaticFiles(directory=str(settings.FRAMES_DIR)), name="frames")
 router.mount("/alerts", StaticFiles(directory=str(settings.ALERTS_DIR)), name="alerts")
 router.mount("/thumbnails", StaticFiles(directory=str(settings.THUMBNAILS_DIR)), name="thumbnails")
-
+router.include_router(video_router, prefix="/videos", tags=["videos"])
+router.include_router(detection_router, prefix="/detection", tags=["detection"])
 # Root endpoint
 @router.get("/")
 async def root():
@@ -298,57 +305,7 @@ async def websocket_endpoint(websocket: WebSocket):
     """
     client_id = None
     
-    try:
-        # Establish connection
-        await websocket_manager.connect(websocket, client_id)
-        
-        while True:
-            try:
-                # Receive message
-                data = await websocket.receive_text()
-                message = json.loads(data)
-                
-                # Handle message types
-                message_type = message.get('type')
-                
-                if message_type == 'connection_established':
-                    client_id = message.get('client_id')
-                    await websocket_manager.broadcast({
-                        'type': 'connection_status',
-                        'status': 'connected',
-                        'client_id': client_id
-                    })
-                
-                elif message_type == 'detection_request':
-                    # Process detection request
-                    video_path = message.get('video_path')
-                    detection_type = message.get('detection_type')
-                    
-                    if video_path and detection_type:
-                        # Start video processing
-                        background_tasks = BackgroundTasks()
-                        background_tasks.add_task(
-                            process_video_background, 
-                            video_path, 
-                            None,  # No specific video ID 
-                            detection_type
-                        )
-                
-                # Add more message type handlers as needed
-                
-            except WebSocketDisconnect:
-                break
-            except Exception as e:
-                logger.error(f"WebSocket error: {str(e)}")
-                await websocket.send_json({
-                    'type': 'error',
-                    'message': str(e)
-                })
     
-    finally:
-        # Cleanup
-        if client_id:
-            websocket_manager.disconnect(websocket, client_id)
 
 # Background video processing function
 async def process_video_background(video_path: str, video_id: Optional[int], detection_type: str):
@@ -381,11 +338,7 @@ async def process_video_background(video_path: str, video_id: Optional[int], det
             })
         
         # Broadcast completion
-        await websocket_manager.broadcast({
-            "type": "processing_completed",
-            "video_id": video_id,
-            "results": result
-        })
+       
     
     except Exception as e:
         logger.error(f"Video processing error: {str(e)}")
@@ -395,11 +348,7 @@ async def process_video_background(video_path: str, video_id: Optional[int], det
             await update_video_status(video_id, "failed")
         
         # Broadcast error
-        await websocket_manager.broadcast({
-            "type": "processing_error",
-            "video_id": video_id,
-            "error": str(e)
-        })
+       
 
 # System Health Check
 @router.get("/health")

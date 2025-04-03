@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 
 from ..core.config import settings
-from ..core.websocket import websocket_manager
+# from ..core.websocket import websocket_manager
 from database import add_detection, add_incident
 
 logger = logging.getLogger(__name__)
@@ -132,14 +132,7 @@ class FaceRecognitionService:
                                 })
                     
                     # Update via WebSocket periodically
-                    if frame_count % 30 == 0:
-                        progress = int((frame_count / total_frames) * 100)
-                        await websocket_manager.broadcast({
-                            "type": "tracking_progress",
-                            "job_id": job_id,
-                            "progress": progress,
-                            "matches": len(matches)
-                        })
+                    
                 
                 # Write processed frame
                 out.write(frame)
@@ -165,12 +158,6 @@ class FaceRecognitionService:
                 pickle.dump(results, f)
             
             # Broadcast completion
-            await websocket_manager.broadcast({
-                "type": "tracking_completed",
-                "job_id": job_id,
-                "matches": len(matches),
-                "output_path": output_path
-            })
             
             return results
         
@@ -178,11 +165,7 @@ class FaceRecognitionService:
             logger.error(f"Face tracking error: {str(e)}")
             
             # Broadcast error
-            await websocket_manager.broadcast({
-                "type": "tracking_error",
-                "job_id": job_id,
-                "error": str(e)
-            })
+         
             
             return {
                 "status": "error",

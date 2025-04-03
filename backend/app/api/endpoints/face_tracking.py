@@ -13,7 +13,7 @@ import pickle
 import uuid
 
 from ...core.config import settings
-from ...core.websocket import manager
+# from ...core.websocket import manager
 from ...services.video_processor import video_processor
 from database import add_detection, add_incident, get_customer_data
 
@@ -371,12 +371,12 @@ async def process_person_tracking(face_image_path, video_path, output_path, scre
                         pickle.dump(results, f)
                     
                     # Update via WebSocket if needed
-                    await manager.broadcast(json.dumps({
-                        "type": "tracking_progress", 
-                        "job_id": job_id, 
-                        "progress": progress, 
-                        "matches": matches_found
-                    }))
+                    # await manager.broadcast(json.dumps({
+                    #     "type": "tracking_progress", 
+                    #     "job_id": job_id, 
+                    #     "progress": progress, 
+                    #     "matches": matches_found
+                    # }))
             
             # Write frame to output video
             out.write(frame)
@@ -398,12 +398,12 @@ async def process_person_tracking(face_image_path, video_path, output_path, scre
             pickle.dump(results, f)
         
         # Send completion notification
-        await manager.broadcast(json.dumps({
-            "type": "tracking_completed", 
-            "job_id": job_id, 
-            "matches": matches_found,
-            "output_path": output_path
-        }))
+        # await manager.broadcast(json.dumps({
+        #     "type": "tracking_completed", 
+        #     "job_id": job_id, 
+        #     "matches": matches_found,
+        #     "output_path": output_path
+        # }))
         
         logger.info(f"Person tracking job {job_id} completed. Found {matches_found} matches.")
         
@@ -447,8 +447,8 @@ async def process_person_tracking(face_image_path, video_path, output_path, scre
             pickle.dump(results, f)
         
         # Send error notification
-        await manager.broadcast(json.dumps({
-            "type": "tracking_failed", 
-            "job_id": job_id, 
-            "error": str(e)
-        }))
+        # await manager.broadcast(json.dumps({
+        #     "type": "tracking_failed", 
+        #     "job_id": job_id, 
+        #     "error": str(e)
+        # }))
