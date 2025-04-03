@@ -131,3 +131,64 @@ export const searchCustomerByFace = async (faceImagePath) => {
 export const addCustomerFaceEncoding = async (customerId, faceImage) => {
   return uploadFile(`/customers/${customerId}/face-encoding`, faceImage);
 };
+
+/**
+ * Get detection statistics
+ * @param {number} cameraId - Optional camera ID to filter by
+ * @param {number} timeRange - Time range in hours
+ * @returns {Promise<Object>} - Detection statistics
+ */
+export const getDetectionStats = async (cameraId = null, timeRange = 24) => {
+  const params = new URLSearchParams();
+  if (cameraId) {
+    params.append('camera_id', cameraId);
+  }
+  params.append('time_range', timeRange);
+  
+  return get(`/detections/stats?${params.toString()}`);
+};
+
+/**
+ * Get detections for a camera
+ * @param {number} cameraId - Camera ID
+ * @param {number} limit - Maximum number of detections to return
+ * @returns {Promise<Object>} - Camera detections
+ */
+export const getCameraDetections = async (cameraId, limit = 100) => {
+  const params = new URLSearchParams();
+  params.append('limit', limit);
+  
+  return get(`/cameras/${cameraId}/detections?${params.toString()}`);
+};
+
+/**
+ * Start real-time inference on a camera
+ * @param {number} cameraId - Camera ID
+ * @param {Array<string>} detectionTypes - Detection types to enable
+ * @returns {Promise<Object>} - Inference status
+ */
+export const startCameraInference = async (cameraId, detectionTypes = ['object', 'theft', 'loitering']) => {
+  const params = new URLSearchParams();
+  detectionTypes.forEach(type => {
+    params.append('detection_types', type);
+  });
+  
+  return post(`/cameras/${cameraId}/inference/start?${params.toString()}`);
+};
+
+/**
+ * Stop real-time inference on a camera
+ * @param {number} cameraId - Camera ID
+ * @returns {Promise<Object>} - Inference status
+ */
+export const stopCameraInference = async (cameraId) => {
+  return post(`/cameras/${cameraId}/inference/stop`);
+};
+
+/**
+ * Get active inferences
+ * @returns {Promise<Object>} - Active inference information
+ */
+export const getActiveInferences = async () => {
+  return get('/inference/active');
+};

@@ -1,163 +1,150 @@
 // src/services/websocketService.js
 
 /**
- * Service for WebSocket communication
+ * WebSocket service for real-time communications
  */
 
 let socket = null;
+let messageListeners = {};
 let isConnected = false;
-const messageListeners = new Map();
-const reconnectDelay = 3000; // 3 seconds
-let reconnectAttempt = 0;
-const maxReconnectAttempts = 5;
 
 /**
- * Connect to WebSocket server
- * @returns {Promise<WebSocket>} WebSocket connection
+ * Connect to the WebSocket server
+ * @returns {Promise<void>} - Promise that resolves when connected
  */
 export const connectWebSocket = () => {
   return new Promise((resolve, reject) => {
-    // If already connected, return existing socket
-    if (socket && isConnected) {
-      resolve(socket);
-      return;
-    }
-    
-    // Get WebSocket URL from environment or use default
     const wsUrl = import.meta.env.VITE_WS_URL || 'ws://localhost:8000/api/ws';
+    socket = new WebSocket(wsUrl);
     
-    try {
-      // Create new WebSocket
-      socket = new WebSocket(wsUrl);
-      
-      // Set up event handlers
-      socket.onopen = () => {
-        console.log('WebSocket connected');
-        isConnected = true;
-        reconnectAttempt = 0;
-        resolve(socket);
-      };
-      
-      socket.onclose = (event) => {
-        console.log('WebSocket disconnected', event);
-        isConnected = false;
+    socket.onopen = () => {
+      console.log('WebSocket connected');
+      isConnected = true;
+      resolve();
+    };
+    
+    socket.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        const messageType = data.type;
         
-        // Try to reconnect if not closed deliberately
-        if (!event.wasClean && reconnectAttempt < maxReconnectAttempts) {
-          reconnectAttempt++;
-          console.log(`Reconnecting attempt ${reconnectAttempt}/${maxReconnectAttempts}...`);
-          
-          setTimeout(() => {
-            connectWebSocket()
-              .then(newSocket => {
-                socket = newSocket;
-                isConnected = true;
-                console.log('WebSocket reconnected');
-              })
-              .catch(error => {
-                console.error('WebSocket reconnection failed:', error);
-              });
-          }, reconnectDelay);
+        if (messageListeners[messageType]) {
+          messageListeners[messageType].forEach(callback => {
+            callback(data);
+          });
         }
-      };
-      
-      socket.onerror = (error) => {
-        console.error('WebSocket error:', error);
-        reject(error);
-      };
-      
-      socket.onmessage = (event) => {
-        try {
-          const data = JSON.parse(event.data);
-          const messageType = data.type;
-          
-          // Dispatch to specific message listeners
-          if (messageListeners.has(messageType)) {
-            messageListeners.get(messageType)(data);
-          }
-          
-          // Dispatch to "all" listeners
-          if (messageListeners.has('all')) {
-            messageListeners.get('all')(data);
-          }
-        } catch (error) {
-          console.error('Error parsing WebSocket message:', error);
+        
+        // Also trigger any 'all' listeners
+        if (messageListeners['all']) {
+          messageListeners['all'].forEach(callback => {
+            callback(data);
+          });
         }
-      };
-    } catch (error) {
-      console.error('Error creating WebSocket:', error);
+      } catch (error) {
+        console.error('WebSocket message error:', error);
+      }
+    };
+    
+    socket.onerror = (error) => {
+      console.error('WebSocket error:', error);
       reject(error);
-    }
+    };
+    
+    socket.onclose = () => {
+      console.log('WebSocket disconnected');
+      isConnected = false;
+    };
   });
 };
 
 /**
- * Add a message listener
+ * Add a message listener for a specific message type
  * @param {string} messageType - Type of message to listen for
- * @param {Function} callback - Callback function
+ * @param {Function} callback - Callback function when message received
  */
 export const addMessageListener = (messageType, callback) => {
-  messageListeners.set(messageType, callback);
+  if (!messageListeners[messageType]) {
+    messageListeners[messageType] = [];
+  }
+  messageListeners[messageType].push(callback);
 };
 
 /**
  * Remove a message listener
- * @param {string} messageType - Type of message to remove listener for
+ * @param {string} messageType - Type of message to stop listening for
+ * @param {Function} callback - Callback function to remove (optional)
  */
-export const removeMessageListener = (messageType) => {
-  messageListeners.delete(messageType);
+export const removeMessageListener = (messageType, callback) => {
+  if (!messageListeners[messageType]) return;
+  
+  if (callback) {
+    messageListeners[messageType] = messageListeners[messageType].filter(cb => cb !== callback);
+  } else {
+    delete messageListeners[messageType];
+  }
 };
 
 /**
- * Send a message through WebSocket
+ * Send a message to the WebSocket server
  * @param {Object} message - Message to send
- * @returns {Promise<void>}
  */
-export const sendMessage = async (message) => {
-  // Connect if not already connected
-  if (!socket || !isConnected) {
-    await connectWebSocket();
+export const sendMessage = (message) => {
+  if (!socket || socket.readyState !== WebSocket.OPEN) {
+    throw new Error('WebSocket is not connected');
   }
   
-  // Send message
   socket.send(JSON.stringify(message));
 };
 
 /**
- * Close WebSocket connection
+ * Start real-time video inference
+ * @param {Object} params - Inference parameters
+ */
+export const startRealTimeInference = (params) => {
+  const wsUrl = import.meta.env.VITE_WS_INFERENCE_URL || 'ws://localhost:8000/api/ws/inference';
+  const inferenceSocket = new WebSocket(wsUrl);
+  
+  inferenceSocket.onopen = () => {
+    inferenceSocket.send(JSON.stringify({
+      type: 'start_inference',
+      params
+    }));
+  };
+  
+  return inferenceSocket;
+};
+
+/**
+ * Send a video frame for real-time inference
+ * @param {WebSocket} inferenceSocket - WebSocket connection for inference
+ * @param {ImageData|Blob} frame - Video frame to analyze
+ */
+export const sendFrameForInference = (inferenceSocket, frame) => {
+  if (inferenceSocket.readyState === WebSocket.OPEN) {
+    inferenceSocket.send(JSON.stringify({
+      type: 'frame',
+      frame: frame instanceof Blob ? frame : frame.data
+    }));
+  }
+};
+
+/**
+ * Close the WebSocket connection
  */
 export const closeConnection = () => {
   if (socket) {
     socket.close();
     socket = null;
-    isConnected = false;
   }
 };
-
-/**
- * Get connection status
- * @returns {boolean} - Whether WebSocket is connected
- */
-export const getConnectionStatus = () => {
-  return isConnected;
-};
-
-// Setup auto-reconnect when window regains focus
-if (typeof window !== 'undefined') {
-  window.addEventListener('focus', () => {
-    if (!isConnected) {
-      connectWebSocket().catch(error => {
-        console.error('Failed to reconnect on window focus:', error);
-      });
-    }
-  });
-}
 
 export default {
   connectWebSocket,
   addMessageListener,
   removeMessageListener,
   sendMessage,
+  startRealTimeInference,
+  sendFrameForInference,
   closeConnection,
-  isConnected: getConnectionStatus
+  get isConnected() { return isConnected; }
 };

@@ -17,7 +17,7 @@ export const startLoiteringDetection = async (videoPath, thresholdTime = 10) => 
   params.append('video_path', videoPath);
   params.append('threshold_time', thresholdTime);
   
-  return post(`/videos/loitering-detection?${params.toString()}`);
+  return post(`/detection/loitering?${params.toString()}`);
 };
 
 /**
@@ -38,7 +38,11 @@ export const startTheftDetection = async (videoPath, options = {}) => {
     params.append('hand_stay_time_waist', options.handStayTimeWaist);
   }
   
-  return post(`/videos/theft-detection?${params.toString()}`);
+  if (options.cameraId) {
+    params.append('camera_id', options.cameraId);
+  }
+  
+  return post(`/detection/theft?${params.toString()}`);
 };
 
 /**
@@ -53,15 +57,18 @@ export const getProcessingStatus = async (jobId) => {
 /**
  * Track face across video
  * @param {File} faceImage - Face image file
- * @param {string} videoPath - Path to video file
+ * @param {string} videoPath - Path to video file (optional)
  * @returns {Promise<Object>} - Tracking results
  */
-export const trackFace = async (faceImage, videoPath) => {
+export const trackFace = async (faceImage, videoPath = null) => {
   const formData = new FormData();
   formData.append('face_image', faceImage);
-  formData.append('video_path', videoPath);
   
-  return post('/face-tracking/track', formData, {
+  if (videoPath) {
+    formData.append('video_path', videoPath);
+  }
+  
+  return post('/face-recognition/track', formData, {
     headers: {
       'Content-Type': 'multipart/form-data'
     }
@@ -74,13 +81,13 @@ export const trackFace = async (faceImage, videoPath) => {
  * @returns {Promise<Object>} - Tracking results
  */
 export const getTrackingResults = async (jobId) => {
-  return get(`/face-tracking/results/${jobId}`);
+  return get(`/face-recognition/track/${jobId}`);
 };
 
 /**
  * Upload video for processing
  * @param {File} videoFile - Video file
- * @param {string} detectionType - Type of detection to perform
+ * @param {string} detectionType - Type of detection to perform (theft, loitering, face_detection)
  * @returns {Promise<Object>} - Upload result
  */
 export const uploadVideo = async (videoFile, detectionType) => {
@@ -95,11 +102,42 @@ export const uploadVideo = async (videoFile, detectionType) => {
   });
 };
 
+/**
+ * Get list of all processed videos
+ * @returns {Promise<Array>} - List of video information objects
+ */
+export const getProcessedVideos = async () => {
+  return get('/videos');
+};
+
+/**
+ * Get detections for a specific video
+ * @param {number} videoId - Video ID to filter by (optional)
+ * @returns {Promise<Array>} - List of detection objects
+ */
+export const getDetections = async (videoId = null) => {
+  const params = videoId ? `?video_id=${videoId}` : '';
+  return get(`/detections${params}`);
+};
+
+/**
+ * Get list of incidents with optional recent filter
+ * @param {boolean} recentOnly - Filter for recent incidents only
+ * @returns {Promise<Array>} - List of incident information objects
+ */
+export const getIncidents = async (recentOnly = false) => {
+  const params = recentOnly ? '?recent=true' : '';
+  return get(`/incidents${params}`);
+};
+
 export default {
   startLoiteringDetection,
   startTheftDetection,
   getProcessingStatus,
   trackFace,
   getTrackingResults,
-  uploadVideo
+  uploadVideo,
+  getProcessedVideos,
+  getDetections,
+  getIncidents
 };

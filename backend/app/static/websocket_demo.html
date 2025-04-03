@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Real-time Video Inference Demo</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        h1 {
+            color: #333;
+        }
+        .container {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 20px;
+        }
+        .panel {
+            background: white;
+            border-radius: 8px;
+            padding: 15px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            flex: 1;
+            min-width: 300px;
+        }
+        .controls {
+            margin-top: 15px;
+            padding-top: 15px;
+            border-top: 1px solid #eee;
+        }
+        canvas {
+            width: 100%;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        button {
+            background-color: #4CAF50;
+            border: none;
+            color: white;
+            padding: 10px 15px;
+            text-align: center;
+            text-decoration: none;
+            display: inline-block;
+            font-size: 14px;
+            margin: 4px 2px;
+            cursor: pointer;
+            border-radius: 4px;
+        }
+        button:disabled {
+            background-color: #cccccc;
+            cursor: not-allowed;
+        }
+        button.stop {
+            background-color: #f44336;
+        }
+        select {
+            padding: 8px;
+            border-radius: 4px;
+            border: 1px solid #ddd;
+            width: 100%;
+            max-width: 300px;
+            margin-bottom: 10px;
+        }
+        .file-input {
+            margin: 10px 0;
+            width: 100%;
+        }
+        input[type="file"] {
+            display: block;
+            margin: 10px 0;
+            width: 100%;
+            max-width: 300px;
+        }
+        .detection-info {
+            margin-top: 10px;
+            font-size: 14px;
+            color: #666;
+        }
+        .detection-item {
+            background-color: #f9f9f9;
+            padding: 6px;
+            margin: 6px 0;
+            border-left: 3px solid #4CAF50;
+            border-radius: 4px;
+        }
+        .theft {
+            border-left-color: #f44336;
+        }
+        .loitering {
+            border-left-color: #FF9800;
+        }
+        .upload-info {
+            margin-top: 10px;
+            color: #666;
+            font-style: italic;
+        }
+    </style>
+</head>
+<body>
+    <h1>Real-time Video Inference Demo</h1>
+    
+    <div class="container">
+        <div class="panel">
+            <h2>Video Processing</h2>
+            <div id="canvasContainer">
+                <canvas id="outputCanvas" width="640" height="480"></canvas>
+            </div>
+            <div class="controls">
+                <div>
+                    <label for="videoFile">Upload Video:</label>
+                    <input type="file" id="videoFile" accept="video/*" />
+                    <div class="upload-info">Supported formats: MP4, AVI, MOV, etc.</div>
+                </div>
+                <div>
+                    <label for="detectionType">Detection Type:</label>
+                    <select id="detectionType">
+                        <option value="all">General Object Detection</option>
+                        <option value="theft">Theft Detection</option>
+                        <option value="loitering">Loitering Detection</option>
+                    </select>
+                </div>
+                <div>
+                    <label for="connectionStatus">Connection Status:</label>
+                    <span id="connectionStatus" style="color: red; font-weight: bold;">Not Connected</span>
+                </div>
+                <button id="connectButton">Connect to Server</button>
+                <button id="startButton" disabled>Process Video</button>
+                <button id="stopButton" class="stop" disabled>Stop Processing</button>
+            </div>
+        </div>
+        
+        <div class="panel">
+            <h2>Detection Results</h2>
+            <div id="detectionResults">
+                <p>No detections yet. Upload a video and start processing to see results.</p>
+            </div>
+        </div>
+    </div>
+    
+    <script src="../api/websocket_client.js"></script>
+    <script>
+        // Global variables
+        let client = null;
+        let canvas = document.getElementById('outputCanvas');
+        let connectionStatus = document.getElementById('connectionStatus');
+        
+        // Initialize on page load
+        window.addEventListener('DOMContentLoaded', async () => {
+            // Set up button event handlers
+            document.getElementById('connectButton').addEventListener('click', connectToServer);
+            document.getElementById('startButton').addEventListener('click', startInference);
+            document.getElementById('stopButton').addEventListener('click', stopInference);
+        });
+        
+        // Connect to WebSocket server
+        async function connectToServer() {
+            try {
+                // Determine WebSocket URL based on current page
+                const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+                const host = location.host || 'localhost:8000';
+                
+                // Try all possible endpoint paths (no prefix, /api prefix)
+                // Order matters - we try the ones most likely to work first
+                const possibleEndpoints = [
+                    `${protocol}//${host}/ws/inference`,
+                    `${protocol}//${host}/api/ws/inference`,
+                    `${protocol}//${host}/inference`,
+                    `ws://localhost:8000/ws/inference`,
+                    `ws://localhost:8000/api/ws/inference`,
+                    `ws://${window.location.hostname}:8000/ws/inference`
+                ];
+                
+                connectionStatus.innerText = "Connecting...";
+                connectionStatus.style.color = "orange";
+                
+                // Create client if not already created
+                if (client) {
+                    client.disconnect();
+                }
+                
+                // Try first endpoint
+                const firstUrl = possibleEndpoints[0];
+                console.log(`Trying WebSocket endpoint: ${firstUrl}`);
+                
+                client = new InferenceWebSocketClient(firstUrl, {
+                    frameRate: 15,
+                    maxReconnectAttempts: 1  // Only try once per endpoint
+                });
+                
+                // Set up fallback mechanism
+                let currentEndpointIndex = 0;
+                let connectionSucceeded = false;
+                
+                // Set up callbacks
+                client.onConnected = () => {
+                    console.log(`WebSocket connected to ${possibleEndpoints[currentEndpointIndex]}`);
+                    connectionStatus.innerText = `Connected to ${possibleEndpoints[currentEndpointIndex]}`;
+                    connectionStatus.style.color = "green";
+                    document.getElementById('startButton').disabled = false;
+                    document.getElementById('connectButton').disabled = true;
+                    connectionSucceeded = true;
+                };
+                
+                client.onDisconnected = (event) => {
+                    console.log(`WebSocket disconnected from ${possibleEndpoints[currentEndpointIndex]}`, event);
+                    
+                    if (connectionSucceeded) {
+                        // If we were previously connected, update UI
+                        connectionStatus.innerText = `Disconnected (Code: ${event.code})`;
+                        connectionStatus.style.color = "red";
+                        updateButtons(false);
+                        document.getElementById('connectButton').disabled = false;
+                        return;
+                    }
+                    
+                    // Try next endpoint if connection failed
+                    currentEndpointIndex++;
+                    
+                    if (currentEndpointIndex < possibleEndpoints.length) {
+                        const nextUrl = possibleEndpoints[currentEndpointIndex];
+                        console.log(`Connection failed. Trying next endpoint: ${nextUrl}`);
+                        connectionStatus.innerText = `Trying ${nextUrl}...`;
+                        
+                        // Create new client with next URL
+                        client = new InferenceWebSocketClient(nextUrl, {
+                            frameRate: 15,
+                            maxReconnectAttempts: 1
+                        });
+                        
+                        // Set up callbacks again
+                        client.onConnected = this.onConnected;
+                        client.onDisconnected = this.onDisconnected;
+                        client.onInferenceResult = handleInferenceResult;
+                        client.onError = this.onError;
+                        
+                        // Connect to next endpoint
+                        setTimeout(() => {
+                            client.connect();
+                        }, 500);
+                    } else {
+                        // All endpoints failed
+                        connectionStatus.innerText = "All connection attempts failed";
+                        connectionStatus.style.color = "red";
+                        document.getElementById('connectButton').disabled = false;
+                        console.error("All WebSocket endpoints failed to connect");
+                    }
+                };
+                
+                client.onInferenceResult = handleInferenceResult;
+                
+                client.onError = (error) => {
+                    console.error('WebSocket error:', error);
+                    // Don't update UI on error, let the disconnect handler handle it
+                };
+                
+                // Connect to first endpoint
+                client.connect();
+                
+            } catch (error) {
+                console.error('Error setting up connection:', error);
+                connectionStatus.innerText = "Connection Failed";
+                connectionStatus.style.color = "red";
+                document.getElementById('connectButton').disabled = false;
+                alert('Error connecting to server: ' + error.message);
+            }
+        }
+        
+        // Start inference
+        async function startInference() {
+            try {
+                // Check if connected
+                if (!client || !client.connected) {
+                    alert('Not connected to server. Please connect first.');
+                    return;
+                }
+                
+                // Check if a file is selected
+                const fileInput = document.getElementById('videoFile');
+                if (!fileInput.files || !fileInput.files[0]) {
+                    alert('Please select a video file first.');
+                    return;
+                }
+                
+                const videoFile = fileInput.files[0];
+                
+                // Get selected detection type
+                const detectionType = document.getElementById('detectionType').value;
+                console.log(`Starting inference with detection type: ${detectionType}`);
+                
+                // Start inference with the uploaded video
+                let processingCanvas;
+                try {
+                    if (detectionType === 'theft') {
+                        console.log('Starting theft detection...');
+                        processingCanvas = await client.startFileTheftDetection(videoFile);
+                    } else if (detectionType === 'loitering') {
+                        console.log('Starting loitering detection...');
+                        processingCanvas = await client.startFileLoiteringDetection(videoFile);
+                    } else {
+                        console.log('Starting general object detection...');
+                        processingCanvas = await client.startFileInference(videoFile, { detection_type: detectionType });
+                    }
+                    
+                    // Update UI
+                    updateButtons(true);
+                    clearDetectionResults();
+                    
+                    // Replace the canvas with the processing canvas
+                    const canvasContainer = document.getElementById('canvasContainer');
+                    canvasContainer.innerHTML = '';
+                    processingCanvas.id = 'outputCanvas';
+                    processingCanvas.style.width = '100%';
+                    canvasContainer.appendChild(processingCanvas);
+                } catch (processingError) {
+                    console.error('Error starting video processing:', processingError);
+                    alert('Error processing video: ' + processingError.message);
+                }
+                
+            } catch (error) {
+                console.error('Error starting inference:', error);
+                alert('Error starting inference: ' + error.message);
+            }
+        }
+        
+        // Stop inference
+        function stopInference() {
+            if (client) {
+                client.stopInference();
+                updateButtons(false);
+            }
+        }
+        
+        // Handle inference results
+        function handleInferenceResult(message) {
+            console.log('Inference result:', message);
+            
+            // Update detection results display
+            if (message.detections && message.detections.length > 0) {
+                console.log(`Received ${message.detections.length} detections of type ${message.detection_type}`);
+                updateDetectionResults(message.detections, message.detection_type);
+            }
+        }
+        
+        // Update detection results panel
+        function updateDetectionResults(detections, detectionType) {
+            const resultsContainer = document.getElementById('detectionResults');
+            
+            // Clear if too many items
+            if (resultsContainer.children.length > 20) {
+                clearDetectionResults();
+            }
+            
+            // Display each detection
+            detections.forEach(detection => {
+                const item = document.createElement('div');
+                item.className = `detection-item ${detection.type}`;
+                
+                let html = `<strong>${detection.type}</strong>`;
+                
+                if (detection.class_name) {
+                    html += ` - ${detection.class_name}`;
+                }
+                
+                if (detection.confidence) {
+                    html += ` (${Math.round(detection.confidence * 100)}%)`;
+                }
+                
+                if (detection.type === 'theft' && detection.zone) {
+                    html += `<br>Zone: ${detection.zone}`;
+                    if (detection.duration) {
+                        html += `, Duration: ${detection.duration.toFixed(1)}s`;
+                    }
+                }
+                
+                if (detection.type === 'loitering' && detection.time_present) {
+                    html += `<br>Time present: ${detection.time_present.toFixed(1)}s`;
+                }
+                
+                item.innerHTML = html;
+                resultsContainer.prepend(item);
+            });
+        }
+        
+        // Clear detection results
+        function clearDetectionResults() {
+            document.getElementById('detectionResults').innerHTML = 
+                '<p>Processing video stream...</p>';
+        }
+        
+        // Update button states
+        function updateButtons(isActive) {
+            document.getElementById('startButton').disabled = isActive;
+            document.getElementById('stopButton').disabled = !isActive;
+            document.getElementById('videoFile').disabled = isActive;
+            document.getElementById('detectionType').disabled = isActive;
+            
+            if (!isActive) {
+                document.getElementById('startButton').disabled = !client || !client.connected;
+            }
+        }
+    </script>
+</body>
+</html>

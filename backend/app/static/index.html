@@ -1,0 +1,489 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Security Dashboard - Live Stream Demo</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background-color: white;
+            padding: 20px;
+            border-radius: 5px;
+            box-shadow: 0 0 10px rgba(0,0,0,0.1);
+        }
+        h1, h2 {
+            color: #333;
+        }
+        .stream-container {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 20px;
+            margin-top: 20px;
+        }
+        .stream-card {
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            overflow: hidden;
+            width: 100%;
+            max-width: 640px;
+            background-color: #fff;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .stream-header {
+            background-color: #333;
+            color: white;
+            padding: 10px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .stream-body {
+            padding: 10px;
+        }
+        .stream-image {
+            width: 100%;
+            height: auto;
+            background-color: #eee;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 360px;
+            position: relative;
+        }
+        .stream-image img {
+            width: 100%;
+            height: auto;
+        }
+        .progress-bar {
+            width: 100%;
+            height: 5px;
+            background-color: #e0e0e0;
+            margin-top: 5px;
+            position: relative;
+        }
+        .progress-bar-fill {
+            height: 100%;
+            background-color: #4CAF50;
+            width: 0%;
+            transition: width 0.3s ease;
+        }
+        .progress-text {
+            font-size: 12px;
+            color: #666;
+            margin-top: 5px;
+            text-align: center;
+        }
+        .stream-controls {
+            padding: 10px;
+            display: flex;
+            gap: 10px;
+        }
+        .stream-status {
+            padding: 10px;
+            background-color: #f8f8f8;
+            border-top: 1px solid #ddd;
+            font-size: 14px;
+        }
+        .btn {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: background-color 0.3s;
+        }
+        .btn-primary {
+            background-color: #4CAF50;
+            color: white;
+        }
+        .btn-danger {
+            background-color: #f44336;
+            color: white;
+        }
+        .btn:hover {
+            opacity: 0.9;
+        }
+        .camera-list {
+            list-style: none;
+            padding: 0;
+            margin: 0 0 20px 0;
+        }
+        .camera-list li {
+            padding: 10px;
+            border: 1px solid #ddd;
+            margin-bottom: 5px;
+            border-radius: 4px;
+            display: flex;
+            justify-content: space-between;
+        }
+        .camera-list li:hover {
+            background-color: #f9f9f9;
+        }
+        .detection-list {
+            list-style: none;
+            padding: 0;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+        .detection-item {
+            padding: 8px;
+            margin-bottom: 5px;
+            background-color: #f9f9f9;
+            border-radius: 3px;
+            font-size: 13px;
+            border-left: 3px solid #4CAF50;
+        }
+        .status {
+            display: inline-block;
+            padding: 3px 6px;
+            border-radius: 3px;
+            font-size: 12px;
+            font-weight: bold;
+        }
+        .status-online {
+            background-color: #4CAF50;
+            color: white;
+        }
+        .status-offline {
+            background-color: #cccccc;
+            color: #333;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Security Dashboard - Live Stream Demo</h1>
+        <p>This page demonstrates the real-time video streaming with object detection.</p>
+        
+        <h2>Available Cameras</h2>
+        <ul id="camera-list" class="camera-list">
+            <li>Loading cameras...</li>
+        </ul>
+        
+        <h2>Live Stream</h2>
+        <div class="stream-container">
+            <div class="stream-card">
+                <div class="stream-header">
+                    <span id="stream-title">Select a camera to view</span>
+                    <span id="stream-status" class="status status-offline">Offline</span>
+                </div>
+                <div class="stream-body">
+                    <div class="stream-image">
+                        <img id="stream-img" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=" alt="No Stream">
+                        <div class="progress-bar">
+                            <div id="progress-bar-fill" class="progress-bar-fill"></div>
+                        </div>
+                        <div id="progress-text" class="progress-text"></div>
+                    </div>
+                    <div class="stream-controls">
+                        <button id="start-stream" class="btn btn-primary" disabled>Start Stream</button>
+                        <button id="stop-stream" class="btn btn-danger" disabled>Stop Stream</button>
+                    </div>
+                    <div class="stream-status">
+                        <strong>Status:</strong> <span id="status-text">Not connected</span>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="stream-card">
+                <div class="stream-header">
+                    <span>Detections</span>
+                </div>
+                <div class="stream-body">
+                    <div id="detection-info">
+                        <p>Select a camera and start streaming to view detections.</p>
+                        <ul id="detection-list" class="detection-list">
+                        </ul>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // DOM elements
+        const cameraList = document.getElementById('camera-list');
+        const streamImg = document.getElementById('stream-img');
+        const streamTitle = document.getElementById('stream-title');
+        const streamStatus = document.getElementById('stream-status');
+        const startStreamBtn = document.getElementById('start-stream');
+        const stopStreamBtn = document.getElementById('stop-stream');
+        const statusText = document.getElementById('status-text');
+        const detectionList = document.getElementById('detection-list');
+        const progressBarFill = document.getElementById('progress-bar-fill');
+        const progressText = document.getElementById('progress-text');
+        
+        // WebSocket connection
+        let ws = null;
+        let selectedCameraId = null;
+        let isStreaming = false;
+        
+        // Connect to WebSocket
+        function connectWebSocket() {
+            // Get WebSocket URL from current location
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const baseUrl = `${protocol}//${window.location.host}`;
+            
+            // Try the correct path first (with /api prefix)
+            connectToWebSocketUrl(`${baseUrl}/api/ws/live`);
+        }
+        
+        function connectToWebSocketUrl(wsUrl) {
+            console.log(`Attempting to connect to WebSocket at: ${wsUrl}`);
+            ws = new WebSocket(wsUrl);
+            
+            ws.onopen = function() {
+                console.log('WebSocket connected successfully');
+                statusText.textContent = 'Connected to server';
+                
+                // Request camera list
+                ws.send(JSON.stringify({
+                    action: 'list_cameras'
+                }));
+            };
+            
+            ws.onmessage = function(event) {
+                const data = JSON.parse(event.data);
+                console.log('Received:', data);
+                
+                switch (data.type) {
+                    case 'camera_list':
+                        updateCameraList(data.cameras);
+                        break;
+                    case 'live_detection':
+                        if (selectedCameraId === data.camera_id) {
+                            updateStreamImage(data.frame);
+                            updateDetections(data.detections);
+                            updateProgress(data.progress, data.frame_number, data.total_frames);
+                        }
+                        break;
+                    case 'error':
+                        statusText.textContent = 'Error: ' + data.message;
+                        break;
+                    case 'subscribed':
+                        statusText.textContent = `Subscribed to camera ${data.camera_id}`;
+                        break;
+                    case 'stream_started':
+                        streamStatus.textContent = 'Online';
+                        streamStatus.className = 'status status-online';
+                        statusText.textContent = `Stream started for camera ${data.camera_id}`;
+                        isStreaming = true;
+                        stopStreamBtn.disabled = false;
+                        break;
+                    case 'stream_stopped':
+                        streamStatus.textContent = 'Offline';
+                        streamStatus.className = 'status status-offline';
+                        statusText.textContent = `Stream stopped for camera ${data.camera_id}`;
+                        isStreaming = false;
+                        startStreamBtn.disabled = false;
+                        stopStreamBtn.disabled = true;
+                        break;
+                }
+            };
+            
+            ws.onclose = function(event) {
+                console.log(`WebSocket disconnected with code: ${event.code}`);
+                
+                // If this was the first attempt (with /api prefix) and it failed, try without prefix
+                if (wsUrl.includes('/api/ws/live')) {
+                    console.log('Trying legacy WebSocket path without /api prefix');
+                    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                    const baseUrl = `${protocol}//${window.location.host}`;
+                    setTimeout(() => connectToWebSocketUrl(`${baseUrl}/ws/live`), 1000);
+                } else {
+                    statusText.textContent = 'Disconnected from server. Retrying in 5s...';
+                    // Try again with the same URL after a delay
+                    setTimeout(() => connectToWebSocketUrl(wsUrl), 5000);
+                }
+            };
+            
+            ws.onerror = function(error) {
+                console.error('WebSocket error:', error);
+                statusText.textContent = 'WebSocket connection error';
+            };
+        }
+        
+        // Update camera list
+        function updateCameraList(cameras) {
+            cameraList.innerHTML = '';
+            
+            if (cameras.length === 0) {
+                cameraList.innerHTML = '<li>No cameras available</li>';
+                return;
+            }
+            
+            cameras.forEach(camera => {
+                const li = document.createElement('li');
+                
+                // Create camera info
+                const cameraInfo = document.createElement('div');
+                cameraInfo.innerHTML = `
+                    <strong>${camera.name}</strong> (ID: ${camera.id})
+                    <span class="status ${camera.is_streaming ? 'status-online' : 'status-offline'}">
+                        ${camera.is_streaming ? 'Streaming' : camera.status}
+                    </span>
+                `;
+                
+                // Create action button
+                const actionBtn = document.createElement('button');
+                actionBtn.className = 'btn ' + (camera.is_streaming ? 'btn-danger' : 'btn-primary');
+                actionBtn.textContent = camera.is_streaming ? 'Stop Streaming' : 'Start Streaming';
+                actionBtn.onclick = function() {
+                    selectCamera(camera.id, camera.name, camera.is_streaming);
+                };
+                
+                li.appendChild(cameraInfo);
+                li.appendChild(actionBtn);
+                cameraList.appendChild(li);
+            });
+        }
+        
+        // Select a camera
+        function selectCamera(cameraId, cameraName, isActive) {
+            selectedCameraId = cameraId;
+            streamTitle.textContent = `Camera: ${cameraName}`;
+            
+            // Reset progress
+            progressBarFill.style.width = '0%';
+            progressText.textContent = '';
+            
+            // Reset detections
+            detectionList.innerHTML = '<li class="detection-item">No detections yet</li>';
+            
+            if (isActive) {
+                // Camera is already streaming, just subscribe
+                ws.send(JSON.stringify({
+                    action: 'subscribe',
+                    camera_id: cameraId
+                }));
+                
+                streamStatus.textContent = 'Online';
+                streamStatus.className = 'status status-online';
+                isStreaming = true;
+                startStreamBtn.disabled = true;
+                stopStreamBtn.disabled = false;
+            } else {
+                // Enable start stream button
+                startStreamBtn.disabled = false;
+                stopStreamBtn.disabled = true;
+                streamStatus.textContent = 'Offline';
+                streamStatus.className = 'status status-offline';
+                isStreaming = false;
+            }
+            
+            // Update button click handlers
+            startStreamBtn.onclick = function() {
+                startStream(cameraId);
+            };
+            
+            stopStreamBtn.onclick = function() {
+                stopStream(cameraId);
+            };
+        }
+        
+        // Start streaming
+        function startStream(cameraId) {
+            ws.send(JSON.stringify({
+                action: 'start_stream',
+                camera_id: cameraId
+            }));
+            
+            startStreamBtn.disabled = true;
+            statusText.textContent = 'Starting stream...';
+        }
+        
+        // Stop streaming
+        function stopStream(cameraId) {
+            ws.send(JSON.stringify({
+                action: 'stop_stream',
+                camera_id: cameraId
+            }));
+            
+            stopStreamBtn.disabled = true;
+            statusText.textContent = 'Stopping stream...';
+        }
+        
+        // Update stream image
+        function updateStreamImage(frameBase64) {
+            streamImg.src = 'data:image/jpeg;base64,' + frameBase64;
+        }
+        
+        // Update detections
+        function updateDetections(detections) {
+            detectionList.innerHTML = '';
+            
+            if (!detections || detections.length === 0) {
+                detectionList.innerHTML = '<li class="detection-item">No detections</li>';
+                return;
+            }
+            
+            detections.forEach(detection => {
+                const li = document.createElement('li');
+                li.className = 'detection-item';
+                
+                const bbox = detection.bbox.map(v => Math.round(v));
+                
+                li.innerHTML = `
+                    <strong>${detection.class_name}</strong>
+                    <div>Confidence: ${(detection.confidence * 100).toFixed(1)}%</div>
+                    <div>Position: [${bbox.join(', ')}]</div>
+                `;
+                
+                detectionList.appendChild(li);
+            });
+        }
+        
+        // Update progress
+        function updateProgress(progress, frameNumber, totalFrames) {
+            if (progress !== null && progress !== undefined) {
+                progressBarFill.style.width = `${progress}%`;
+                progressText.textContent = `Frame ${frameNumber} of ${totalFrames || 'unknown'}`;
+            } else if (frameNumber) {
+                // If we have frame number but no progress
+                progressText.textContent = `Frame ${frameNumber}`;
+                progressBarFill.style.width = '0%';
+            } else {
+                // Hide progress for live streams
+                progressText.textContent = 'Live Stream';
+                progressBarFill.style.width = '0%';
+            }
+        }
+        
+        // Initialize
+        window.onload = function() {
+            connectWebSocket();
+            
+            // Fallback to fetch cameras using REST API
+            setTimeout(() => {
+                if (cameraList.innerHTML === '<li>Loading cameras...</li>') {
+                    fetchCamerasFromApi();
+                }
+            }, 3000);
+        };
+        
+        // Fetch cameras using REST API
+        function fetchCamerasFromApi() {
+            fetch('/api/cameras')
+                .then(response => response.json())
+                .then(cameras => {
+                    updateCameraList(cameras);
+                    statusText.textContent = 'Loaded cameras from API (WebSocket not available)';
+                })
+                .catch(error => {
+                    console.error('Error fetching cameras:', error);
+                    statusText.textContent = 'Error loading cameras';
+                    cameraList.innerHTML = '<li>Error loading cameras. Check console for details.</li>';
+                });
+        }
+    </script>
+</body>
+</html> 

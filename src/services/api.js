@@ -1,127 +1,122 @@
-// src/services/api.js
 /**
- * Base API service for making HTTP requests to the backend
+ * API utilities for making HTTP requests
  */
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api';
+import axios from 'axios';
 
-/**
- * Basic fetch wrapper with error handling
- * @param {string} endpoint - API endpoint to call
- * @param {Object} options - Fetch options
- * @returns {Promise<any>} - Response data
- */
-export const fetchAPI = async (endpoint, options = {}) => {
-  try {
-    const url = `${API_BASE_URL}${endpoint}`;
-    
-    // Default headers
-    const headers = {
-      'Content-Type': 'application/json',
-      ...options.headers,
-    };
+// Get base URL from environment or use default
+const baseURL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api';
 
-    const response = await fetch(url, {
-      ...options,
-      headers,
-    });
+// Create axios instance with default config
+const api = axios.create({
+  baseURL,
+  headers: {
+    'Content-Type': 'application/json',
+  },
+});
 
-    // Check if the response is ok (status in the range 200-299)
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      throw new Error(errorData.detail || `API error: ${response.status}`);
+// Add request interceptor for authentication
+api.interceptors.request.use(
+  (config) => {
+    // Get token from storage if available
+    const token = localStorage.getItem('token');
+    if (token) {
+      config.headers.Authorization = `Bearer ${token}`;
     }
-
-    // Check if response is empty
-    const contentType = response.headers.get('content-type');
-    if (contentType && contentType.includes('application/json')) {
-      return await response.json();
-    }
-    
-    return await response.text();
-  } catch (error) {
-    console.error('API request failed:', error);
-    throw error;
+    return config;
+  },
+  (error) => {
+    return Promise.reject(error);
   }
-};
+);
+
+// Response interceptor for error handling
+api.interceptors.response.use(
+  (response) => response.data,
+  (error) => {
+    // Handle specific error codes
+    if (error.response) {
+      // Authentication errors
+      if (error.response.status === 401) {
+        localStorage.removeItem('token');
+        // Redirect to login if needed
+        // window.location.href = '/login';
+      }
+      
+      // Format error message
+      const errorMessage = error.response.data?.detail || 'An error occurred';
+      error.message = errorMessage;
+    }
+    
+    return Promise.reject(error);
+  }
+);
 
 /**
- * GET request helper
- * @param {string} endpoint - API endpoint
- * @param {Object} options - Additional fetch options
+ * Make a GET request
+ * @param {string} url - URL path
+ * @param {Object} options - Axios request options
  * @returns {Promise<any>} - Response data
  */
-export const get = (endpoint, options = {}) => {
-  return fetchAPI(endpoint, {
-    method: 'GET',
-    ...options,
-  });
-};
+export const get = (url, options = {}) => api.get(url, options);
 
 /**
- * POST request helper
- * @param {string} endpoint - API endpoint
- * @param {Object} data - Data to send
- * @param {Object} options - Additional fetch options
+ * Make a POST request
+ * @param {string} url - URL path
+ * @param {Object} data - Request body
+ * @param {Object} options - Axios request options
  * @returns {Promise<any>} - Response data
  */
-export const post = (endpoint, data, options = {}) => {
-  return fetchAPI(endpoint, {
-    method: 'POST',
-    body: JSON.stringify(data),
-    ...options,
-  });
-};
+export const post = (url, data = {}, options = {}) => api.post(url, data, options);
 
 /**
- * PUT request helper
- * @param {string} endpoint - API endpoint
- * @param {Object} data - Data to send
- * @param {Object} options - Additional fetch options
+ * Make a PUT request
+ * @param {string} url - URL path
+ * @param {Object} data - Request body
+ * @param {Object} options - Axios request options
  * @returns {Promise<any>} - Response data
  */
-export const put = (endpoint, data, options = {}) => {
-  return fetchAPI(endpoint, {
-    method: 'PUT',
-    body: JSON.stringify(data),
-    ...options,
-  });
-};
+export const put = (url, data = {}, options = {}) => api.put(url, data, options);
 
 /**
- * DELETE request helper
- * @param {string} endpoint - API endpoint
- * @param {Object} options - Additional fetch options
+ * Make a DELETE request
+ * @param {string} url - URL path
+ * @param {Object} options - Axios request options
  * @returns {Promise<any>} - Response data
  */
-export const del = (endpoint, options = {}) => {
-  return fetchAPI(endpoint, {
-    method: 'DELETE',
-    ...options,
-  });
-};
+export const del = (url, options = {}) => api.delete(url, options);
 
 /**
- * Upload file helper
- * @param {string} endpoint - API endpoint
+ * Upload a file with form data
+ * @param {string} url - URL path
  * @param {File} file - File to upload
  * @param {Object} additionalData - Additional form data
- * @param {Object} options - Additional fetch options
+ * @param {Object} options - Axios request options
  * @returns {Promise<any>} - Response data
  */
-export const uploadFile = (endpoint, file, additionalData = {}, options = {}) => {
+export const uploadFile = (url, file, additionalData = {}, options = {}) => {
   const formData = new FormData();
   formData.append('file', file);
   
-  // Add any additional data to form data
+  // Add any additional data to form
   Object.entries(additionalData).forEach(([key, value]) => {
     formData.append(key, value);
   });
   
-  return fetchAPI(endpoint, {
-    method: 'POST',
-    body: formData,
-    headers: {}, // Let the browser set the content type for form data
+  return api.post(url, formData, {
     ...options,
+    headers: {
+      ...options.headers,
+      'Content-Type': 'multipart/form-data',
+    },
   });
+};
+
+export default {
+  get,
+  post,
+  put,
+  del,
+  uploadFile,
+  baseURL
 };
