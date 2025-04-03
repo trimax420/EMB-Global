@@ -15,23 +15,24 @@ import asyncio
 sys.path.append(str(Path(__file__).parent))
 
 from app.services.video_processor import VideoProcessor, VideoFileCamera
+from app.services.detection_models import TheftDetectionModel, LoiteringDetectionModel
 
 async def process_frames(args):
     """Process frames asynchronously using the new async method signature"""
     # Initialize video processor and cameras
     video_processor = VideoProcessor()
     
-    # Use models from the VideoProcessor instance
+    # Initialize detection models
     theft_model = None
     loitering_model = None
     
     if args.detection in ["theft", "both"]:
         print("Initializing theft detection model...")
-        theft_model = video_processor.theft_detection_model
+        theft_model = TheftDetectionModel()
     
     if args.detection in ["loitering", "both"]:
         print("Initializing loitering detection model...")
-        loitering_model = video_processor.loitering_detection_model
+        loitering_model = LoiteringDetectionModel()
     
     # Create output directory
     os.makedirs(args.output, exist_ok=True)

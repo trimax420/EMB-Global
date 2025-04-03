@@ -40,6 +40,11 @@ class Settings(BaseSettings):
 
     # Detection settings
     DETECTION_THRESHOLD: float = 0.6  # Default confidence threshold
+    
+    # Theft detection settings
+    HAND_STAY_TIME_CHEST: float = 2.0  # Seconds to consider hand in chest area suspicious
+    HAND_STAY_TIME_WAIST: float = 1.5  # Seconds to consider hand in waist area suspicious
+    CROP_PADDING: int = 20  # Padding for cropped detection images
 
     # WebSocket settings
     PING_INTERVAL: int = 30  # Seconds between WebSocket ping messages

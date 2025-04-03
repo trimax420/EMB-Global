@@ -202,24 +202,53 @@ async def get_processing_status(
         Dict: Processing status information
     """
     try:
-        # Check if results file exists
-        results_path = os.path.join(settings.PROCESSED_DIR, f"{job_id}_results.pkl")
-        
-        if not os.path.exists(results_path):
-            return {
-                "status": "processing",
-                "message": "Processing in progress",
-                "progress": 0
-            }
-        
-        # Load results
-        with open(results_path, 'rb') as f:
-            results = pickle.load(f)
+        # Look up job status
+        if job_id not in processing_jobs:
+            raise HTTPException(status_code=404, detail=f"Job ID not found: {job_id}")
             
-        return results
+        job_info = processing_jobs[job_id]
+        
+        return {
+            "job_id": job_id,
+            "status": job_info.get("status", "unknown"),
+            "progress": job_info.get("progress", 0),
+            "output_path": job_info.get("output_path"),
+            "start_time": job_info.get("start_time"),
+            "end_time": job_info.get("end_time"),
+            "error": job_info.get("error")
+        }
         
     except Exception as e:
-        logger.error(f"Error retrieving processing status: {str(e)}")
+        logger.error(f"Error getting processing status: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Video Processor Configuration Endpoint
+@router.post("/config/display-mode")
+async def configure_display_mode(
+    mode: str = Query("raw", description="Display mode: 'raw' (no visualization) or 'detection' (with visualization)"),
+    run_detection: bool = Query(True, description="Whether to run detection in background")
+):
+    """
+    Configure how video streams are displayed and processed
+    
+    Args:
+        mode: Display mode - 'raw' for clean video, 'detection' for visualization
+        run_detection: Whether to run detection processes in background
+        
+    Returns:
+        Dict: Updated configuration settings
+    """
+    try:
+        # Configure the video processor
+        result = video_processor.configure_display_mode(mode=mode, run_detection=run_detection)
+        
+        return {
+            "message": f"Display mode configured to '{mode}', background detection: {run_detection}",
+            "config": result
+        }
+        
+    except Exception as e:
+        logger.error(f"Error configuring display mode: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # Background processing functions
@@ -390,22 +419,50 @@ async def convert_frame_to_bytes(frame, quality=70, max_width=640):
         logger.error(f"Frame conversion error: {str(e)}")
         return None
 
-# Helper functions for incident creation
-async def save_incident_frame(frame, incident_type, camera_id):
-    """Save frame as an incident image"""
+# Utility function for saving images optimized for storage
+def optimize_frame_for_storage(frame, quality=85, max_width=1280):
+    """Optimize frame for storage by resizing and compression"""
+    # Resize if needed
+    h, w = frame.shape[:2]
+    if w > max_width:
+        scale = max_width / w
+        new_h, new_w = int(h * scale), max_width
+        frame = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
+    
+    # Compress
+    encode_param = [cv2.IMWRITE_JPEG_QUALITY, quality]
+    _, buffer = cv2.imencode('.jpg', frame, encode_param)
+    
+    return buffer
+
+async def save_incident_frame(frame, detection_type, camera_id):
+    """
+    Save incident frame to disk
+    
+    Args:
+        frame: Frame to save
+        detection_type: Type of detection (theft, loitering)
+        camera_id: Camera identifier
+        
+    Returns:
+        str: Path to saved image
+    """
     try:
-        # Create incidents directory if it doesn't exist
-        incidents_dir = os.path.join("incidents")
-        os.makedirs(incidents_dir, exist_ok=True)
+        # Create timestamp
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         
-        # Generate filename with timestamp
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"{incident_type}_{camera_id}_{timestamp}.jpg"
-        filepath = os.path.join(incidents_dir, filename)
+        # Create directory if not exists
+        incident_dir = os.path.join(settings.INCIDENTS_DIR, detection_type)
+        os.makedirs(incident_dir, exist_ok=True)
         
-        # Save the frame
-        cv2.imwrite(filepath, frame)
-        logger.info(f"Saved incident frame to {filepath}")
+        # Create filename
+        filename = f"{detection_type}_{camera_id}_{timestamp}.jpg"
+        filepath = os.path.join(incident_dir, filename)
+        
+        # Optimize and save frame
+        buffer = optimize_frame_for_storage(frame)
+        with open(filepath, 'wb') as f:
+            f.write(buffer)
         
         return filepath
     except Exception as e:
@@ -413,29 +470,44 @@ async def save_incident_frame(frame, incident_type, camera_id):
         return None
 
 async def create_incident(camera_id, incident_type, confidence, frame_path, metadata=None):
-    """Create an incident record in the database"""
+    """
+    Create incident record in database
+    
+    Args:
+        camera_id: Camera identifier
+        incident_type: Type of incident (theft, loitering)
+        confidence: Detection confidence
+        frame_path: Path to saved frame
+        metadata: Additional metadata about the incident
+        
+    Returns:
+        str: Incident ID
+    """
     try:
-        # In a real application, this would be stored in a database
-        # For now, we'll just log it
-        logger.info(f"Created incident: Camera {camera_id}, Type: {incident_type}, Confidence: {confidence:.2f}")
-        logger.info(f"  Frame path: {frame_path}")
-        if metadata:
-            logger.info(f"  Metadata: {metadata}")
-        
-        # Broadcast incident to all connected clients
-        await websocket_manager.broadcast({
-            "type": "new_incident",
-            "camera_id": camera_id,
-            "incident_type": incident_type,
+        # Prepare incident data
+        incident_data = {
+            "type": incident_type,
+            "timestamp": datetime.now(),
+            "location": f"Camera {camera_id}",
+            "description": f"{incident_type.capitalize()} detected with {confidence:.2f} confidence",
+            "image_path": frame_path,
+            "video_url": None,  # For live feed, no video URL
+            "severity": "high" if confidence > 0.8 else "medium",
             "confidence": confidence,
-            "timestamp": datetime.now().isoformat(),
-            "frame_path": frame_path
-        })
+            "is_resolved": False,
+            "metadata": metadata or {}
+        }
         
-        return True
+        # Add to database
+        # Note: In a real implementation, this would use your database schema
+        # For now, we'll just log it
+        logger.info(f"Created incident: {incident_data}")
+        incident_id = str(uuid.uuid4())
+        
+        return incident_id
     except Exception as e:
         logger.error(f"Error creating incident: {str(e)}")
-        return False
+        return None
 
 # Add a new endpoint to fetch recent detections
 @router.get("/detections/recent")
@@ -524,7 +596,9 @@ async def realtime_detection_websocket(
             "camera_id": camera_id,
             "detection_types": detection_types,
             "is_mock": use_mock,
-            "is_video_file": use_video
+            "is_video_file": use_video,
+            "display_mode": video_processor.display_mode,
+            "background_detection": video_processor.run_detection_in_background
         })
         
         frame_count = 0
@@ -532,6 +606,13 @@ async def realtime_detection_websocket(
         last_fps_update = start_time
         fps = 0
         critical_detection_count = 0
+        
+        # Throttle variables for incident recording
+        last_incident_time = {
+            "theft": time.time() - 10,  # Initialize to allow immediate first incident
+            "loitering": time.time() - 10
+        }
+        incident_throttle_seconds = 5.0  # Only record an incident every 5 seconds per type
         
         while True:
             # Get frame from camera or mock data
@@ -564,73 +645,111 @@ async def realtime_detection_websocket(
             detections = {}
             has_critical_detection = False
             
-            # Process theft detection if enabled
-            if theft_model and "theft" in detection_types:
-                theft_results = theft_model.detect(frame.copy())
-                detections["theft"] = theft_results
-                
-                # Check if this is a critical detection (high confidence)
-                if theft_results.get("detected", False) and theft_results.get("confidence", 0) > 0.8:
-                    has_critical_detection = True
-                    critical_detection_count += 1
+            # Skip detection if it's disabled completely
+            if video_processor.display_mode == "raw" and not video_processor.run_detection_in_background:
+                # Skip all detection when raw mode and background detection disabled
+                pass
+            else:
+                # Process theft detection if enabled
+                if theft_model and "theft" in detection_types:
+                    # Use a copy of the frame for detection if we're not showing visualizations
+                    detection_frame = frame.copy() if video_processor.display_mode == "raw" else frame
                     
-                    # Log critical detections
-                    logger.warning(f"Critical theft detection - Camera {camera_id}: "
-                                  f"Confidence: {theft_results.get('confidence', 0):.2f}")
+                    theft_results = theft_model.detect(
+                        frame=detection_frame, 
+                        camera_id=camera_id,
+                        draw_visualization=(video_processor.display_mode == "detection")
+                    )
+                    detections["theft"] = theft_results
                     
-                    # Create incident record for high-confidence detections
-                    if theft_results.get("confidence", 0) > 0.85:
-                        # Save frame for incident
-                        incident_frame_path = await save_incident_frame(frame, "theft", camera_id)
+                    # Check if this is a critical detection (high confidence)
+                    if theft_results.get("detected", False) and theft_results.get("confidence", 0) > 0.8:
+                        has_critical_detection = True
+                        critical_detection_count += 1
                         
-                        # Create incident in database
-                        await create_incident(
-                            camera_id=camera_id,
-                            incident_type="theft",
-                            confidence=theft_results.get("confidence", 0),
-                            frame_path=incident_frame_path,
-                            metadata={
-                                "bounding_boxes": theft_results.get("bounding_boxes", []),
-                                "is_mock": is_mock,
-                                "is_video_file": is_video_file
-                            }
-                        )
+                        # Log critical detections
+                        logger.warning(f"Critical theft detection - Camera {camera_id}: "
+                                      f"Confidence: {theft_results.get('confidence', 0):.2f}")
+                        
+                        # Create incident record for high-confidence detections
+                        if theft_results.get("confidence", 0) > 0.85:
+                            # Check if enough time has passed since last incident
+                            current_time = time.time()
+                            if current_time - last_incident_time["theft"] >= incident_throttle_seconds:
+                                # Save frame for incident
+                                incident_frame_path = await save_incident_frame(frame, "theft", camera_id)
+                                
+                                # Create incident in database
+                                await create_incident(
+                                    camera_id=camera_id,
+                                    incident_type="theft",
+                                    confidence=theft_results.get("confidence", 0),
+                                    frame_path=incident_frame_path,
+                                    metadata={
+                                        "bounding_boxes": theft_results.get("bounding_boxes", []),
+                                        "is_mock": is_mock,
+                                        "is_video_file": is_video_file
+                                    }
+                                )
+                                
+                                # Update last incident time
+                                last_incident_time["theft"] = current_time
+                
+                # Process loitering detection if enabled
+                if loitering_model and "loitering" in detection_types:
+                    # Use a copy of the frame for detection if we're not showing visualizations
+                    detection_frame = frame.copy() if video_processor.display_mode == "raw" else frame
+                    
+                    loitering_results = loitering_model.detect(
+                        frame=detection_frame,
+                        camera_id=camera_id,
+                        draw_visualization=(video_processor.display_mode == "detection")
+                    )
+                    detections["loitering"] = loitering_results
+                    
+                    # Check for critical loitering detection (long duration)
+                    if loitering_results.get("detected", False) and loitering_results.get("duration", 0) > 12.0:
+                        has_critical_detection = True
+                        critical_detection_count += 1
+                        
+                        # Log critical detections
+                        logger.warning(f"Critical loitering detection - Camera {camera_id}: "
+                                     f"Duration: {loitering_results.get('duration', 0):.2f}s")
+                        
+                        # Create incident record for long-duration loitering
+                        if loitering_results.get("duration", 0) > 15.0:
+                            # Check if enough time has passed since last incident
+                            current_time = time.time()
+                            if current_time - last_incident_time["loitering"] >= incident_throttle_seconds:
+                                # Save frame for incident
+                                incident_frame_path = await save_incident_frame(frame, "loitering", camera_id)
+                                
+                                # Create incident in database
+                                await create_incident(
+                                    camera_id=camera_id,
+                                    incident_type="loitering",
+                                    confidence=min(1.0, loitering_results.get("duration", 0) / 20.0),  # Convert duration to confidence
+                                    frame_path=incident_frame_path,
+                                    metadata={
+                                        "duration": loitering_results.get("duration", 0),
+                                        "regions": loitering_results.get("regions", []),
+                                        "is_mock": is_mock,
+                                        "is_video_file": is_video_file
+                                    }
+                                )
+                                
+                                # Update last incident time
+                                last_incident_time["loitering"] = current_time
             
-            # Process loitering detection if enabled
-            if loitering_model and "loitering" in detection_types:
-                loitering_results = loitering_model.detect(frame.copy(), camera_id=camera_id)
-                detections["loitering"] = loitering_results
-                
-                # Check for critical loitering detection (long duration)
-                if loitering_results.get("detected", False) and loitering_results.get("duration", 0) > 12.0:
-                    has_critical_detection = True
-                    critical_detection_count += 1
-                    
-                    # Log critical detections
-                    logger.warning(f"Critical loitering detection - Camera {camera_id}: "
-                                 f"Duration: {loitering_results.get('duration', 0):.2f}s")
-                    
-                    # Create incident record for long-duration loitering
-                    if loitering_results.get("duration", 0) > 15.0:
-                        # Save frame for incident
-                        incident_frame_path = await save_incident_frame(frame, "loitering", camera_id)
-                        
-                        # Create incident in database
-                        await create_incident(
-                            camera_id=camera_id,
-                            incident_type="loitering",
-                            confidence=min(1.0, loitering_results.get("duration", 0) / 20.0),  # Convert duration to confidence
-                            frame_path=incident_frame_path,
-                            metadata={
-                                "duration": loitering_results.get("duration", 0),
-                                "regions": loitering_results.get("regions", []),
-                                "is_mock": is_mock,
-                                "is_video_file": is_video_file
-                            }
-                        )
+            # Prepare frame for transmission
+            h, w = frame.shape[:2]
+            # Resize frame to 640p width for faster transmission
+            if w > 640:
+                scale_factor = 640 / w
+                frame = cv2.resize(frame, (640, int(h * scale_factor)), interpolation=cv2.INTER_AREA)
             
             # Encode frame for transmission
-            success, encoded_frame = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+            success, encoded_frame = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
             
             if not success:
                 await websocket.send_json({
@@ -668,7 +787,7 @@ async def realtime_detection_websocket(
             await websocket.send_json(message)
             
             # Throttle to avoid overwhelming the client
-            await asyncio.sleep(0.05)  # Adjust for desired frame rate (0.05 = ~20 FPS max)
+            await asyncio.sleep(0.02)  # Adjusted for higher frame rate (0.02 = ~50 FPS max)
     
     except WebSocketDisconnect:
         logger.info(f"WebSocket client disconnected: Camera ID {camera_id}")
