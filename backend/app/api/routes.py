@@ -1,429 +1,366 @@
-from fastapi import (
-    APIRouter, 
-    HTTPException, 
-    File, 
-    UploadFile, 
-    BackgroundTasks, 
-    Query, 
-    WebSocket, 
-    WebSocketDisconnect,
-    Depends
-)
-from fastapi.responses import JSONResponse, FileResponse
-from fastapi.staticfiles import StaticFiles
-from typing import List, Optional, Dict
-import logging
-import os
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
+import requests
+import tempfile
+import pickle
 import uuid
-import json
-from datetime import datetime, timedelta
+import os
+import logging
+from datetime import datetime
+from pathlib import Path
+from typing import Optional
 
-# Import core modules
-from app.core.config import settings
-from app.core.websocket import websocket_manager
+from ..core.config import settings
+from ..core.websocket import websocket_manager
+from ..services.video_processor import video_processor
 
-# Import services
-from app.services.video_processor import video_processor
-from app.services.face_recognition import face_recognition_service
-
-# Import database operations
-from database import (
-    init_db, 
-    get_all_videos, 
-    get_detections, 
-    get_incidents,
-    add_video, 
-    add_detection, 
-    add_incident,
-    update_video_status,
-    get_customer_data,
-    add_customer_data
-)
-
-# Import schemas
-from app.models.schemas import (
-    VideoInfo, 
-    DetectionInfo, 
-    IncidentInfo, 
-    CameraStatus,
-    CustomerData
-)
-
-# Setup logging
+# Set up logging
 logger = logging.getLogger(__name__)
 
-# Create main API router
+# Define router - make sure this is at the top before any endpoint definitions
 router = APIRouter()
 
-# Ensure upload directories exist
-for directory in [
-    settings.UPLOAD_DIR,
-    settings.PROCESSED_DIR,
-    settings.FRAMES_DIR,
-    settings.ALERTS_DIR,
-    settings.THUMBNAILS_DIR
-]:
-    os.makedirs(directory, exist_ok=True)
-    logger.info(f"Ensured directory exists: {directory}")
-
-# Mount static file directories
-router.mount("/uploads", StaticFiles(directory=str(settings.UPLOAD_DIR)), name="uploads")
-router.mount("/processed", StaticFiles(directory=str(settings.PROCESSED_DIR)), name="processed")
-router.mount("/frames", StaticFiles(directory=str(settings.FRAMES_DIR)), name="frames")
-router.mount("/alerts", StaticFiles(directory=str(settings.ALERTS_DIR)), name="alerts")
-router.mount("/thumbnails", StaticFiles(directory=str(settings.THUMBNAILS_DIR)), name="thumbnails")
-
-# Root endpoint
-@router.get("/")
-async def root():
+# Helper function to download videos from URLs
+async def download_from_url(url: str) -> str:
     """
-    Root endpoint providing basic API information
+    Download a file from a URL to a temporary file
+    
+    Args:
+        url (str): URL to download
+        
+    Returns:
+        str: Path to the downloaded temporary file
     """
-    return {
-        "message": "Security Dashboard API",
-        "version": "1.0.0",
-        "status": "operational"
-    }
+    try:
+        # Create a temporary file
+        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
+        temp_path = temp_file.name
+        temp_file.close()
+        
+        # Download the file
+        response = requests.get(url, stream=True)
+        response.raise_for_status()
+        
+        with open(temp_path, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                f.write(chunk)
+        
+        logger.info(f"Successfully downloaded video from {url} to {temp_path}")
+        return temp_path
+        
+    except Exception as e:
+        logger.error(f"Error downloading video from {url}: {str(e)}")
+        raise
 
-# Video Processing Endpoints
-@router.post("/videos/upload")
-async def upload_video(
+# Theft Detection Endpoint
+@router.post("/videos/theft-detection")
+async def process_theft_detection(
     background_tasks: BackgroundTasks,
-    video: UploadFile = File(...),
-    detection_type: str = Query(..., 
-        description="Type of detection (theft, loitering, face_detection)")
+    video_path: str = Query(..., description="Path or URL to the video file to process"),
+    hand_stay_time_chest: float = Query(1.0, description="Time threshold for hand in chest area (seconds)"),
+    hand_stay_time_waist: float = Query(1.5, description="Time threshold for hand in waist area (seconds)"),
+    camera_id: Optional[int] = Query(None, description="Camera ID if available")
 ):
     """
-    Upload and process video for detection
+    Process video for theft detection
     
     Args:
-        video (UploadFile): Video file to upload
-        detection_type (str): Type of detection to perform
-    
+        video_path (str): Path or URL to video file
+        hand_stay_time_chest (float): Time threshold for chest area
+        hand_stay_time_waist (float): Time threshold for waist area
+        camera_id (Optional[int]): Camera ID
+        
     Returns:
-        Dict: Video processing job information
+        Dict: Processing job information
     """
     try:
-        # Generate unique filename
-        filename = f"{uuid.uuid4()}_{video.filename}"
-        file_path = os.path.join(settings.UPLOAD_DIR, filename)
+        local_video_path = video_path
         
-        # Save uploaded file
-        with open(file_path, "wb") as buffer:
-            buffer.write(await video.read())
+        # If the video path is a URL, download it first
+        if video_path.startswith("http"):
+            logger.info(f"Downloading video from URL: {video_path}")
+            local_video_path = await download_from_url(video_path)
+            logger.info(f"Video downloaded to: {local_video_path}")
+        elif not os.path.exists(video_path):
+            raise HTTPException(status_code=404, detail=f"Video file not found: {video_path}")
+            
+        # Generate output paths
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_filename = f"theft_processed_{timestamp}_{Path(local_video_path).name}"
+        output_path = os.path.join(settings.PROCESSED_DIR, output_filename)
         
-        # Create video record in database
-        video_id = await add_video({
-            "name": video.filename,
-            "file_path": file_path,
-            "status": "pending",
-            "detection_type": detection_type,
-            "upload_time": datetime.now()
-        })
+        # Create screenshots directory
+        screenshots_dir = os.path.join(settings.SCREENSHOTS_DIR, f"theft_{timestamp}")
+        os.makedirs(screenshots_dir, exist_ok=True)
         
-        # Start video processing in background
+        # Create tracking job ID
+        job_id = f"theft_{uuid.uuid4().hex[:8]}"
+        
+        # Start theft detection in background
         background_tasks.add_task(
-            process_video_background, 
-            file_path, 
-            video_id, 
-            detection_type
-        )
-        
-        return {
-            "message": "Video uploaded successfully",
-            "video_id": video_id,
-            "filename": filename,
-            "detection_type": detection_type,
-            "status": "processing"
-        }
-    
-    except Exception as e:
-        logger.error(f"Video upload error: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@router.get("/videos")
-async def list_videos():
-    """
-    Retrieve list of all processed videos
-    
-    Returns:
-        List[Dict]: Video information
-    """
-    try:
-        return await get_all_videos()
-    except Exception as e:
-        logger.error(f"Error fetching videos: {str(e)}")
-        raise HTTPException(status_code=500, detail="Error retrieving videos")
-
-# Detection Endpoints
-@router.get("/detections")
-async def list_detections(
-    video_id: Optional[int] = Query(None, description="Filter by video ID")
-):
-    """
-    Retrieve detections with optional video ID filter
-    
-    Args:
-        video_id (Optional[int]): Video ID to filter detections
-    
-    Returns:
-        List[Dict]: Detection information
-    """
-    try:
-        return await get_detections(video_id)
-    except Exception as e:
-        logger.error(f"Error fetching detections: {str(e)}")
-        raise HTTPException(status_code=500, detail="Error retrieving detections")
-
-# Incident Endpoints
-@router.get("/incidents")
-async def list_incidents(
-    recent: bool = Query(False, description="Get only recent incidents")
-):
-    """
-    Retrieve incidents with optional recent filter
-    
-    Args:
-        recent (bool): Filter for recent incidents
-    
-    Returns:
-        List[Dict]: Incident information
-    """
-    try:
-        return await get_incidents(recent)
-    except Exception as e:
-        logger.error(f"Error fetching incidents: {str(e)}")
-        raise HTTPException(status_code=500, detail="Error retrieving incidents")
-
-# Customer Data Endpoints
-@router.get("/customers")
-async def get_customers(
-    gender: Optional[str] = Query(None),
-    date: Optional[str] = Query(None)
-):
-    """
-    Retrieve customer data with optional filters
-    
-    Args:
-        gender (Optional[str]): Filter by gender
-        date (Optional[str]): Filter by entry date
-    
-    Returns:
-        List[Dict]: Customer data
-    """
-    try:
-        filters = {}
-        if gender:
-            filters['gender'] = gender
-        if date:
-            filters['date'] = date
-        
-        return await get_customer_data(filters)
-    except Exception as e:
-        logger.error(f"Error fetching customer data: {str(e)}")
-        raise HTTPException(status_code=500, detail="Error retrieving customer data")
-
-@router.post("/customers")
-async def create_customer(customer_data: CustomerData):
-    """
-    Add new customer data
-    
-    Args:
-        customer_data (CustomerData): Customer information
-    
-    Returns:
-        Dict: Created customer information
-    """
-    try:
-        customer_id = await add_customer_data(customer_data.dict())
-        return {"message": "Customer added successfully", "customer_id": customer_id}
-    except Exception as e:
-        logger.error(f"Error adding customer: {str(e)}")
-        raise HTTPException(status_code=500, detail="Error adding customer")
-
-# Face Recognition Endpoints
-@router.post("/face-recognition/track")
-async def track_person_by_face(
-    background_tasks: BackgroundTasks,
-    face_image: UploadFile = File(...),
-    video_path: Optional[str] = Query(None)
-):
-    """
-    Track a person across video using face recognition
-    
-    Args:
-        face_image (UploadFile): Face image to track
-        video_path (Optional[str]): Optional video path to limit search
-    
-    Returns:
-        Dict: Tracking job information
-    """
-    try:
-        # Save uploaded face image
-        face_filename = f"{uuid.uuid4()}_{face_image.filename}"
-        face_path = os.path.join(settings.UPLOAD_DIR, "faces", face_filename)
-        
-        with open(face_path, "wb") as buffer:
-            buffer.write(await face_image.read())
-        
-        # Start face tracking in background
-        job_id = f"tracking_{uuid.uuid4()}"
-        background_tasks.add_task(
-            face_recognition_service.track_person, 
-            face_path, 
-            video_path, 
+            process_theft_detection_background,
+            local_video_path,
+            output_path,
+            screenshots_dir,
+            hand_stay_time_chest,
+            hand_stay_time_waist,
+            camera_id,
             job_id
         )
         
         return {
-            "message": "Face tracking started",
+            "message": "Theft detection processing started",
             "job_id": job_id,
-            "face_image": face_filename
+            "video_path": video_path,  # Return original path for reference
+            "local_video_path": local_video_path,  # Return local path for debugging
+            "output_path": output_path,
+            "screenshots_dir": screenshots_dir,
+            "status": "processing"
         }
-    
+        
     except Exception as e:
-        logger.error(f"Face tracking error: {str(e)}")
+        logger.error(f"Theft detection error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-# WebSocket endpoint (kept in a separate file for clarity)
-@router.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
+# Loitering Detection Endpoint
+@router.post("/videos/loitering-detection")
+async def process_loitering_detection(
+    background_tasks: BackgroundTasks,
+    video_path: str = Query(..., description="Path or URL to the video file to process"),
+    threshold_time: float = Query(10.0, description="Time threshold for loitering detection (seconds)"),
+    camera_id: Optional[int] = Query(None, description="Camera ID if available")
+):
     """
-    WebSocket endpoint for real-time communication
-    
-    Handles:
-    - Connection management
-    - Real-time updates
-    - Streaming detection results
-    """
-    client_id = None
-    
-    try:
-        # Establish connection
-        await websocket_manager.connect(websocket, client_id)
-        
-        while True:
-            try:
-                # Receive message
-                data = await websocket.receive_text()
-                message = json.loads(data)
-                
-                # Handle message types
-                message_type = message.get('type')
-                
-                if message_type == 'connection_established':
-                    client_id = message.get('client_id')
-                    await websocket_manager.broadcast({
-                        'type': 'connection_status',
-                        'status': 'connected',
-                        'client_id': client_id
-                    })
-                
-                elif message_type == 'detection_request':
-                    # Process detection request
-                    video_path = message.get('video_path')
-                    detection_type = message.get('detection_type')
-                    
-                    if video_path and detection_type:
-                        # Start video processing
-                        background_tasks = BackgroundTasks()
-                        background_tasks.add_task(
-                            process_video_background, 
-                            video_path, 
-                            None,  # No specific video ID 
-                            detection_type
-                        )
-                
-                # Add more message type handlers as needed
-                
-            except WebSocketDisconnect:
-                break
-            except Exception as e:
-                logger.error(f"WebSocket error: {str(e)}")
-                await websocket.send_json({
-                    'type': 'error',
-                    'message': str(e)
-                })
-    
-    finally:
-        # Cleanup
-        if client_id:
-            websocket_manager.disconnect(websocket, client_id)
-
-# Background video processing function
-async def process_video_background(video_path: str, video_id: Optional[int], detection_type: str):
-    """
-    Process video in background and update status
+    Process video for loitering detection
     
     Args:
-        video_path (str): Path to video file
-        video_id (Optional[int]): Video database ID
-        detection_type (str): Type of detection to perform
+        video_path (str): Path or URL to video file
+        threshold_time (float): Time threshold for loitering
+        camera_id (Optional[int]): Camera ID
+        
+    Returns:
+        Dict: Processing job information
     """
     try:
-        # Process video
-        result = await video_processor.process_video(video_path, video_id, detection_type)
+        local_video_path = video_path
         
-        # Update video status if ID is provided
-        if video_id:
-            await update_video_status(video_id, "completed", result["output_path"])
+        # If the video path is a URL, download it first
+        if video_path.startswith("http"):
+            logger.info(f"Downloading video from URL: {video_path}")
+            local_video_path = await download_from_url(video_path)
+            logger.info(f"Video downloaded to: {local_video_path}")
+        elif not os.path.exists(video_path):
+            raise HTTPException(status_code=404, detail=f"Video file not found: {video_path}")
+            
+        # Generate output paths
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_filename = f"loitering_processed_{timestamp}_{Path(local_video_path).name}"
+        output_path = os.path.join(settings.PROCESSED_DIR, output_filename)
         
-        # Store detections
-        for detection in result["detections"]:
-            await add_detection({
-                "video_id": video_id,
-                "timestamp": datetime.now(),
-                "frame_number": detection.get("frame_number", 0),
-                "detection_type": detection["type"],
-                "confidence": detection["confidence"],
-                "bbox": detection["bbox"],
-                "class_name": detection.get("class_name", "unknown")
-            })
+        # Create job ID
+        job_id = f"loitering_{uuid.uuid4().hex[:8]}"
         
-        # Broadcast completion
-        await websocket_manager.broadcast({
-            "type": "processing_completed",
-            "video_id": video_id,
-            "results": result
-        })
-    
+        # Start loitering detection in background
+        background_tasks.add_task(
+            process_loitering_detection_background,
+            local_video_path,
+            output_path,
+            threshold_time,
+            camera_id,
+            job_id
+        )
+        
+        return {
+            "message": "Loitering detection processing started",
+            "job_id": job_id,
+            "video_path": video_path,  # Return original path for reference
+            "local_video_path": local_video_path,  # Return local path for debugging
+            "output_path": output_path,
+            "status": "processing"
+        }
+        
     except Exception as e:
-        logger.error(f"Video processing error: {str(e)}")
+        logger.error(f"Loitering detection error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Processing status endpoint
+@router.get("/processing/status/{job_id}")
+async def get_processing_status(
+    job_id: str
+):
+    """
+    Get the status of a processing job
+    
+    Args:
+        job_id (str): Processing job ID
         
-        # Update video status to failed
-        if video_id:
-            await update_video_status(video_id, "failed")
+    Returns:
+        Dict: Processing status information
+    """
+    try:
+        # Check if results file exists
+        results_path = os.path.join(settings.PROCESSED_DIR, f"{job_id}_results.pkl")
+        
+        if not os.path.exists(results_path):
+            return {
+                "status": "processing",
+                "message": "Processing in progress",
+                "progress": 0
+            }
+        
+        # Load results
+        with open(results_path, 'rb') as f:
+            results = pickle.load(f)
+            
+        return results
+        
+    except Exception as e:
+        logger.error(f"Error retrieving processing status: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Background processing functions
+async def process_theft_detection_background(
+    video_path: str,
+    output_path: str,
+    screenshots_dir: str,
+    hand_stay_time_chest: float,
+    hand_stay_time_waist: float,
+    camera_id: Optional[int],
+    job_id: str
+):
+    """
+    Process theft detection in background
+    """
+    try:
+        # Process the video
+        results = await video_processor.process_theft_detection_smooth(
+            video_path,
+            output_path,
+            screenshots_dir,
+            hand_stay_time_chest,
+            camera_id
+        )
+        
+        # Add job ID to results
+        results["job_id"] = job_id
+        results["status"] = "completed"
+        
+        # Save results for later retrieval
+        results_path = os.path.join(settings.PROCESSED_DIR, f"{job_id}_results.pkl")
+        with open(results_path, 'wb') as f:
+            pickle.dump(results, f)
+        
+        # Broadcast completion via WebSocket
+        await websocket_manager.broadcast({
+            "type": "theft_detection_completed",
+            "job_id": job_id,
+            "total_incidents": results.get("total_theft_incidents", 0),
+            "output_path": output_path
+        })
+        
+        # Clean up temporary file if it was downloaded
+        if video_path.startswith("/tmp/") and os.path.exists(video_path):
+            try:
+                os.remove(video_path)
+                logger.info(f"Removed temporary video file: {video_path}")
+            except Exception as e:
+                logger.warning(f"Failed to remove temporary file {video_path}: {str(e)}")
+        
+    except Exception as e:
+        logger.error(f"Theft detection background error: {str(e)}")
+        
+        # Save error results
+        error_results = {
+            "status": "failed",
+            "message": f"Processing error: {str(e)}",
+            "job_id": job_id
+        }
+        
+        results_path = os.path.join(settings.PROCESSED_DIR, f"{job_id}_results.pkl")
+        with open(results_path, 'wb') as f:
+            pickle.dump(error_results, f)
         
         # Broadcast error
         await websocket_manager.broadcast({
-            "type": "processing_error",
-            "video_id": video_id,
+            "type": "theft_detection_failed",
+            "job_id": job_id,
             "error": str(e)
         })
+        
+        # Clean up temporary file if it was downloaded
+        if video_path.startswith("/tmp/") and os.path.exists(video_path):
+            try:
+                os.remove(video_path)
+            except:
+                pass
 
-# System Health Check
-@router.get("/health")
-async def health_check():
+async def process_loitering_detection_background(
+    video_path: str,
+    output_path: str,
+    threshold_time: float,
+    camera_id: Optional[int],
+    job_id: str
+):
     """
-    Basic system health check endpoint
-    
-    Returns:
-        Dict: System health status
+    Process loitering detection in background
     """
     try:
-        # Add more comprehensive health checks as needed
-        return {
-            "status": "healthy",
-            "timestamp": datetime.now().isoformat(),
-            "components": {
-                "database": "operational",
-                "video_processing": "ready",
-                "websocket": "active"
-            }
-        }
+        # Process the video
+        results = await video_processor.process_loitering_detection_smooth(
+            video_path,
+            output_path,
+            camera_id,
+            threshold_time
+        )
+        
+        # Add job ID to results
+        results["job_id"] = job_id
+        results["status"] = "completed"
+        
+        # Save results for later retrieval
+        results_path = os.path.join(settings.PROCESSED_DIR, f"{job_id}_results.pkl")
+        with open(results_path, 'wb') as f:
+            pickle.dump(results, f)
+        
+        # Broadcast completion via WebSocket
+        await websocket_manager.broadcast({
+            "type": "loitering_detection_completed",
+            "job_id": job_id,
+            "loitering_count": results.get("loitering_count", 0),
+            "output_path": output_path
+        })
+        
+        # Clean up temporary file if it was downloaded
+        if video_path.startswith("/tmp/") and os.path.exists(video_path):
+            try:
+                os.remove(video_path)
+                logger.info(f"Removed temporary video file: {video_path}")
+            except Exception as e:
+                logger.warning(f"Failed to remove temporary file {video_path}: {str(e)}")
+        
     except Exception as e:
-        logger.error(f"Health check error: {str(e)}")
-        raise HTTPException(status_code=500, detail="System health check failed")
-
-# Include any additional routers or endpoints
-# For example, face tracking, specific detection routes, etc.
+        logger.error(f"Loitering detection background error: {str(e)}")
+        
+        # Save error results
+        error_results = {
+            "status": "failed",
+            "message": f"Processing error: {str(e)}",
+            "job_id": job_id
+        }
+        
+        results_path = os.path.join(settings.PROCESSED_DIR, f"{job_id}_results.pkl")
+        with open(results_path, 'wb') as f:
+            pickle.dump(error_results, f)
+        
+        # Broadcast error
+        await websocket_manager.broadcast({
+            "type": "loitering_detection_failed",
+            "job_id": job_id,
+            "error": str(e)
+        })
+        
+        # Clean up temporary file if it was downloaded
+        if video_path.startswith("/tmp/") and os.path.exists(video_path):
+            try:
+                os.remove(video_path)
+            except:
+                pass

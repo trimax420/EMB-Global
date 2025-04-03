@@ -1,9 +1,4 @@
-// src/services/detectionService.js
-/**
- * Service for video processing and object detection features
- */
-
-import { get, post, uploadFile } from './api';
+// Add these functions to your src/services/detectionService.js file
 
 /**
  * Start theft detection processing on a video
@@ -23,62 +18,58 @@ export const startTheftDetection = async (videoPath, options = {}) => {
     params.append('hand_stay_time_waist', options.handStayTimeWaist);
   }
   
-  return get(`/videos/theft-detection?${params.toString()}`);
+  if (options.cameraId) {
+    params.append('camera_id', options.cameraId);
+  }
+  
+  try {
+    const response = await fetch(`${import.meta.env.VITE_API_BASE_URL}/videos/theft-detection?${params.toString()}`, {
+      method: 'POST',
+    });
+    
+    if (!response.ok) {
+      const errorData = await response.json();
+      throw new Error(errorData.detail || 'Failed to start theft detection');
+    }
+    
+    return await response.json();
+  } catch (error) {
+    console.error('Error starting theft detection:', error);
+    throw error;
+  }
 };
 
 /**
  * Start loitering detection processing on a video
  * @param {string} videoPath - Path to video file on server
  * @param {number} thresholdTime - Time threshold in seconds
+ * @param {number} cameraId - Optional camera ID
  * @returns {Promise<Object>} - Processing job information
  */
-export const startLoiteringDetection = async (videoPath, thresholdTime = 10) => {
+export const startLoiteringDetection = async (videoPath, thresholdTime = 10, cameraId = null) => {
   const params = new URLSearchParams();
   params.append('video_path', videoPath);
   params.append('threshold_time', thresholdTime);
   
-  return get(`/videos/loitering-detection?${params.toString()}`);
-};
-
-/**
- * Extract faces from a video
- * @param {string} videoPath - Path to video file
- * @param {number} confidenceThreshold - Detection confidence threshold
- * @returns {Promise<Object>} - Face extraction results
- */
-export const extractFacesFromVideo = async (videoPath, confidenceThreshold = 0.5) => {
-  const params = new URLSearchParams();
-  params.append('video_path', videoPath);
-  params.append('confidence_threshold', confidenceThreshold);
+  if (cameraId) {
+    params.append('camera_id', cameraId);
+  }
   
-  return post(`/videos/face-extraction?${params.toString()}`);
-};
-
-/**
- * Upload video for processing
- * @param {File} videoFile - Video file to upload
- * @param {string} detectionType - Type of detection to perform
- * @returns {Promise<Object>} - Upload result
- */
-export const uploadVideoForProcessing = async (videoFile, detectionType) => {
-  return uploadFile('/videos/upload', videoFile, { detection_type: detectionType });
-};
-
-/**
- * Get all processed videos
- * @returns {Promise<Array>} - List of processed videos
- */
-export const getProcessedVideos = async () => {
-  return get('/videos');
-};
-
-/**
- * Get detections for a video
- * @param {number} videoId - Video ID
- * @returns {Promise<Array>} - List of detections
- */
-export const getVideoDetections = async (videoId) => {
-  return get(`/videos/${videoId}/detections`);
+  try {
+    const response = await fetch(`${import.meta.env.VITE_API_BASE_URL}/videos/loitering-detection?${params.toString()}`, {
+      method: 'POST',
+    });
+    
+    if (!response.ok) {
+      const errorData = await response.json();
+      throw new Error(errorData.detail || 'Failed to start loitering detection');
+    }
+    
+    return await response.json();
+  } catch (error) {
+    console.error('Error starting loitering detection:', error);
+    throw error;
+  }
 };
 
 /**
@@ -87,47 +78,62 @@ export const getVideoDetections = async (videoId) => {
  * @returns {Promise<Object>} - Processing status
  */
 export const getProcessingStatus = async (jobId) => {
-  return get(`/processing/status/${jobId}`);
+  try {
+    const response = await fetch(`${import.meta.env.VITE_API_BASE_URL}/processing/status/${jobId}`);
+    
+    if (!response.ok) {
+      const errorData = await response.json();
+      throw new Error(errorData.detail || 'Failed to get processing status');
+    }
+    
+    return await response.json();
+  } catch (error) {
+    console.error('Error getting processing status:', error);
+    throw error;
+  }
 };
 
 /**
- * Track person across cameras by face
- * @param {File} faceImage - Face image to track
- * @param {string} videoPath - Optional video path to limit search
- * @returns {Promise<Object>} - Tracking job information
+ * Poll for processing status until complete
+ * @param {string} jobId - Processing job ID
+ * @param {Function} onProgress - Callback for progress updates
+ * @param {Function} onComplete - Callback for completion
+ * @param {Function} onError - Callback for errors
+ * @param {number} interval - Polling interval in ms
+ * @returns {Object} - Controller with stop method
  */
-export const trackPersonByFace = async (faceImage, videoPath = null) => {
-  const additionalData = videoPath ? { video_path: videoPath } : {};
-  return uploadFile('/face-tracking/track-person', faceImage, additionalData);
-};
-
-/**
- * Get results of face tracking
- * @param {string} jobId - Tracking job ID
- * @returns {Promise<Object>} - Tracking results
- */
-export const getFaceTrackingResults = async (jobId) => {
-  return get(`/face-tracking/tracking-results/${jobId}`);
-};
-
-/**
- * Search customer history by face
- * @param {string} faceImagePath - Path to face image on server
- * @returns {Promise<Object>} - Customer history matching the face
- */
-export const searchCustomerByFace = async (faceImagePath) => {
-  const params = new URLSearchParams();
-  params.append('face_image_path', faceImagePath);
+export const pollProcessingStatus = (jobId, onProgress, onComplete, onError, interval = 2000) => {
+  let isPolling = true;
   
-  return get(`/face-tracking/customer-history?${params.toString()}`);
-};
-
-/**
- * Add customer face encoding
- * @param {number} customerId - Customer ID
- * @param {File} faceImage - Customer face image
- * @returns {Promise<Object>} - Result
- */
-export const addCustomerFaceEncoding = async (customerId, faceImage) => {
-  return uploadFile(`/customers/${customerId}/face-encoding`, faceImage);
+  const poll = async () => {
+    if (!isPolling) return;
+    
+    try {
+      const result = await getProcessingStatus(jobId);
+      
+      if (result.status === 'completed') {
+        onComplete(result);
+        isPolling = false;
+      } else if (result.status === 'failed') {
+        onError(new Error(result.message || 'Processing failed'));
+        isPolling = false;
+      } else {
+        onProgress(result);
+        setTimeout(poll, interval);
+      }
+    } catch (error) {
+      onError(error);
+      isPolling = false;
+    }
+  };
+  
+  // Start polling
+  poll();
+  
+  // Return controller
+  return {
+    stop: () => {
+      isPolling = false;
+    }
+  };
 };

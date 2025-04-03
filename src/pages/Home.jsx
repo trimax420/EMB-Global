@@ -20,6 +20,7 @@ import { Chart as ChartJS, CategoryScale, LinearScale, BarElement, LineElement, 
 import { useNavigate } from 'react-router-dom';
 import LiveCameraComponent from '../components/LiveCameraComponent';
 import axios from 'axios';
+import DetectionControls from '../components/DetectionControls';
 
 // Register Chart.js components
 ChartJS.register(CategoryScale, LinearScale, BarElement, LineElement, PointElement, Title, Tooltip, Legend, ArcElement);
@@ -32,7 +33,7 @@ const cameras = [
   {
     id: 1,
     name: "Front Entrance",
-    videoUrl: "https://developer-blogs.nvidia.com/wp-content/uploads/2022/12/Figure8-output_blurred-compressed.gif",
+    videoUrl: "https://intelliod.s3.ap-south-1.amazonaws.com/cheese-1.mp4",
     details: { people: 4, vehicles: 1, alerts: 4, objects: 5 },
     status: "online",
     resolution: { width: 640, height: 480 },
@@ -42,7 +43,7 @@ const cameras = [
   {
     id: 2,
     name: "Parking Lot",
-    videoUrl: "https://user-images.githubusercontent.com/11428131/139924111-58637f2e-f2f6-42d8-8812-ab42fece92b4.gif",
+    videoUrl: "https://drive.google.com/uc?export=download&id=1sMVrW01Y32gYd6C0FMPf0VO8YdBh7mvT",
     details: { people: 2, vehicles: 3, alerts: 1, objects: 2 },
     status: "online",
     resolution: { width: 640, height: 480 },
@@ -52,7 +53,7 @@ const cameras = [
   {
     id: 3,
     name: "Electronics Department",
-    videoUrl: "https://developer-blogs.nvidia.com/wp-content/uploads/2024/05/gif-people-in-store-bounding-boxes.gif",
+    videoUrl: "https://drive.google.com/uc?export=download&id=1XNxfvpgVKZvKPsDhJ5XWykLakPCxNTeR",
     details: { people: 0, vehicles: 0, alerts: 0, objects: 1 },
     status: "online",
     resolution: { width: 640, height: 480 },
@@ -294,7 +295,10 @@ const Home = () => {
             selectedCamera={selectedCamera} 
             onUpdateStats={handleUpdateStats}
           />
-          
+          {/* Detection Controls - Added for theft and loitering detection */}
+            <div className="mt-6">
+              <DetectionControls selectedCamera={selectedCamera} />
+            </div>
           {/* Available Cameras */}
           <div className='mt-6'>
             <div className='flex justify-between items-center mb-4'>
