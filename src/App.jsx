@@ -11,6 +11,7 @@ import DailyReport from './pages/DailyReport';
 import AlertsPage from './pages/Alerts';
 import Suspectlist from './pages/SuspectList';
 import BillingActivityPage from './pages/BillingActivityPage';
+import MultiCameraView from './pages/MultiCameraView';
 
 // Global error boundary component
 class ErrorBoundary extends React.Component {
@@ -63,6 +64,7 @@ function App() {
             <Route index element={<Home />} />
             <Route path="alerts" element={<AlertsPage />} />
             <Route path="suspectlist" element={<Suspectlist />} />
+            <Route path="multicamera" element={<MultiCameraView />} />
             {/* Uncomment these routes as needed */}
             {/* <Route path="Live-Feed" element={<Cameras />} />
             <Route path="dailyreport" element={<DailyReport />} />

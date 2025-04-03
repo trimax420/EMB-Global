@@ -34,15 +34,17 @@ class ConnectionManager:
         # Health check and reconnection management
         self.connection_timestamps: Dict[WebSocket, float] = {}
 
-    async def connect(self, websocket: WebSocket, client_id: str = None):
+    async def connect(self, websocket: WebSocket, client_id: str = None, already_accepted: bool = False):
         """
         Establish a new WebSocket connection
         
         Args:
             websocket (WebSocket): Incoming WebSocket connection
             client_id (str, optional): Unique identifier for the client
+            already_accepted (bool, optional): Whether the connection has already been accepted
         """
-        await websocket.accept()
+        if not already_accepted:
+            await websocket.accept()
         
         async with self._lock:
             # Add to global connections
@@ -105,6 +107,19 @@ class ConnectionManager:
         except Exception as e:
             logger.error(f"Error sending message: {str(e)}")
 
+    async def send_binary(self, websocket: WebSocket, binary_data: bytes):
+        """
+        Send binary data to a specific WebSocket
+        
+        Args:
+            websocket (WebSocket): Target WebSocket
+            binary_data (bytes): Binary data to send
+        """
+        try:
+            await websocket.send_bytes(binary_data)
+        except Exception as e:
+            logger.error(f"Error sending binary data: {str(e)}")
+            
     async def broadcast(self, 
                         message: Dict[str, Any], 
                         filter_type: str = None, 
@@ -185,9 +200,50 @@ class ConnectionManager:
             except Exception as e:
                 logger.error(f"Connection cleanup error: {str(e)}")
 
+    async def ping_connections(self, interval: float = 30.0):
+        """
+        Periodically ping connections to ensure they're alive
+        
+        Args:
+            interval (float): Ping interval in seconds
+        """
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                async with self._lock:
+                    for connection in list(self.active_connections):
+                        try:
+                            await connection.send_json({"type": "ping"})
+                            self.connection_timestamps[connection] = asyncio.get_event_loop().time()
+                        except Exception as e:
+                            logger.warning(f"Connection ping failed, disconnecting: {str(e)}")
+                            self.disconnect(connection)
+            except Exception as e:
+                logger.error(f"Ping task error: {str(e)}")
+
+    async def stream_inferences(self, websocket: WebSocket, frame_generator):
+        """
+        Continuously read frames from a generator and send them via WebSocket
+        """
+        try:
+            async for frame_data in frame_generator:
+                await self.send_message(websocket, {
+                    "type": "realtime_inference",
+                    "data": frame_data
+                })
+        except Exception as e:
+            logger.error(f"Stream inferences error: {str(e)}")
+            self.disconnect(websocket)
+
 # Global WebSocket connection manager
 websocket_manager = ConnectionManager()
 
 # Background task to start cleanup
 async def start_websocket_cleanup():
     await websocket_manager.start_cleanup_task()
+
+# Start background tasks
+async def start_websocket_manager_tasks():
+    """Start all websocket manager background tasks"""
+    asyncio.create_task(websocket_manager.start_cleanup_task())
+    asyncio.create_task(websocket_manager.ping_connections())

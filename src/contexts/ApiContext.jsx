@@ -8,7 +8,6 @@ import React, { createContext, useContext, useState, useEffect } from 'react';
 import * as incidentsService from '../services/incidentsService';
 import * as suspectsService from '../services/suspectsService';
 import * as dashboardService from '../services/dashboardService';
-import * as websocketService from '../services/websocketService';
 import * as detectionService from '../services/detectionService';
 
 // Create context
@@ -17,27 +16,6 @@ const ApiContext = createContext();
 export const ApiProvider = ({ children }) => {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState(null);
-  const [websocketConnected, setWebsocketConnected] = useState(false);
-
-  // Connect to WebSocket on component mount
-  useEffect(() => {
-    const connectWs = async () => {
-      try {
-        await websocketService.connectWebSocket();
-        setWebsocketConnected(true);
-      } catch (error) {
-        console.error('Failed to connect to WebSocket:', error);
-        setWebsocketConnected(false);
-      }
-    };
-
-    connectWs();
-
-    // Clean up on unmount
-    return () => {
-      websocketService.closeConnection();
-    };
-  }, []);
 
   // Wrap API calls with loading and error handling
   const withLoadingAndErrorHandling = async (apiCall) => {
@@ -81,7 +59,6 @@ export const ApiProvider = ({ children }) => {
         (...args) => withLoadingAndErrorHandling(() => func(...args)),
       ])
     ),
-    websocket: websocketService
   };
 
   // Context value
@@ -89,7 +66,6 @@ export const ApiProvider = ({ children }) => {
     ...wrappedServices,
     isLoading,
     error,
-    websocketConnected,
     clearError: () => setError(null)
   };
 

@@ -4,5 +4,14 @@ import react from '@vitejs/plugin-react';
 // https://vitejs.dev/config/
 export default defineConfig({
   plugins: [react()],
-  base: '/security_dashboard1/',  // Replace 'repository-name' with your actual GitHub repository name
+  server: {
+    proxy: {
+      '/api': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+        ws: true, // Enable WebSocket proxy
+        secure: false
+      }
+    }
+  }
 });

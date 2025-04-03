@@ -7,13 +7,22 @@ import {
   ShoppingBag,
   User,
   Pause,
-  Play
+  Play,
+  RefreshCw
 } from 'lucide-react';
 
 const LiveCameraComponent = ({ selectedCamera, onUpdateStats }) => {
   const [isVideoPlaying, setIsVideoPlaying] = useState(true);
   const [videoError, setVideoError] = useState(false);
+  const [retryCount, setRetryCount] = useState(0);
+  const [useFallback, setUseFallback] = useState(false);
   const videoRef = useRef(null);
+
+  // Reliable fallback video URL
+  const fallbackVideoUrl = "https://user-images.githubusercontent.com/11428131/137016574-0d180d9b-fb9a-42a9-94b7-fbc0dbc18560.gif";
+
+  // Get the current video URL to use (original or fallback)
+  const currentVideoUrl = useFallback ? fallbackVideoUrl : selectedCamera?.videoUrl;
 
   // Toggle video playback
   const toggleVideo = () => {
@@ -27,25 +36,141 @@ const LiveCameraComponent = ({ selectedCamera, onUpdateStats }) => {
     }
   };
 
+  // Retry loading the video
+  const retryVideoLoad = () => {
+    if (videoRef.current && selectedCamera) {
+      setVideoError(false);
+      setRetryCount(prev => prev + 1);
+      
+      if (retryCount >= 2 && !useFallback) {
+        // After two failed attempts, switch to fallback video
+        console.log('Switching to fallback video after multiple failures');
+        setUseFallback(true);
+        
+        // Reset the video element with the fallback URL
+        setTimeout(() => {
+          videoRef.current.src = fallbackVideoUrl;
+          videoRef.current.load();
+          
+          const playPromise = videoRef.current.play();
+          if (playPromise !== undefined) {
+            playPromise
+              .then(() => {
+                setIsVideoPlaying(true);
+                console.log('Fallback video playback started successfully');
+              })
+              .catch(error => {
+                console.error("Fallback video play failed:", error);
+                setIsVideoPlaying(false);
+                setVideoError(true);
+              });
+          }
+        }, 100);
+        
+        return;
+      }
+      
+      // Create a completely new URL with timestamp to avoid caching
+      let videoUrl = selectedCamera.videoUrl;
+      
+      // For S3 URLs, add proper parameters
+      if (videoUrl.includes('s3.') || videoUrl.includes('cloudfront.net')) {
+        // Parse the existing URL and remove any existing timestamp
+        const urlParts = videoUrl.split('?');
+        const baseUrl = urlParts[0];
+        
+        // Create query parameters
+        const params = new URLSearchParams();
+        params.append('t', new Date().getTime());
+        
+        // Rebuild the URL
+        videoUrl = `${baseUrl}?${params.toString()}`;
+        console.log('Retrying with new URL:', videoUrl);
+      } else {
+        // For non-S3 URLs, just add a timestamp
+        videoUrl = videoUrl.includes('?') 
+          ? `${videoUrl.split('?')[0]}?t=${new Date().getTime()}`
+          : `${videoUrl}?t=${new Date().getTime()}`;
+      }
+      
+      // Set the updated URL directly on the video element
+      videoRef.current.src = videoUrl;
+      
+      // Add a small delay before reloading to ensure the DOM is updated
+      setTimeout(() => {
+        videoRef.current.load();
+        
+        // Attempt to play after a short delay
+        setTimeout(() => {
+          const playPromise = videoRef.current.play();
+          if (playPromise !== undefined) {
+            playPromise
+              .then(() => {
+                setIsVideoPlaying(true);
+                console.log('Video playback resumed successfully');
+              })
+              .catch(error => {
+                console.error("Video retry play failed:", error);
+                setIsVideoPlaying(false);
+                setVideoError(true);
+              });
+          }
+        }, 300);
+      }, 100);
+    }
+  };
+
   // Reset video when camera changes
   useEffect(() => {
     setVideoError(false);
+    setRetryCount(0);
+    setUseFallback(false);
     
     // Handle autoplay for new camera selection
     if (videoRef.current && selectedCamera) {
-      videoRef.current.load();
-      const playPromise = videoRef.current.play();
+      // Delay loading to ensure proper cleanup
+      const timeoutId = setTimeout(() => {
+        console.log('Loading video:', selectedCamera.videoUrl);
+        videoRef.current.load();
+        
+        // Add better error handling for S3 URLs
+        if ((selectedCamera.videoUrl && selectedCamera.videoUrl.includes('s3.')) || 
+            selectedCamera.videoUrl.includes('cloudfront.net')) {
+          console.log('Loading cloud video:', selectedCamera.videoUrl);
+        }
+        
+        const playPromise = videoRef.current.play();
+        
+        if (playPromise !== undefined) {
+          playPromise
+            .then(() => setIsVideoPlaying(true))
+            .catch(error => {
+              console.error("Video autoplay failed:", error);
+              setIsVideoPlaying(false);
+            });
+        }
+      }, 100); // Small delay to prevent race conditions
       
-      if (playPromise !== undefined) {
-        playPromise
-          .then(() => setIsVideoPlaying(true))
-          .catch(error => {
-            console.error("Video autoplay failed:", error);
-            setIsVideoPlaying(false);
-          });
-      }
+      return () => clearTimeout(timeoutId);
     }
   }, [selectedCamera]);
+
+  // Add this new useEffect to log errors and set up better error handling
+  useEffect(() => {
+    const videoElement = videoRef.current;
+    
+    const handleError = (e) => {
+      console.error("Video error detected:", e);
+      console.error("Error code:", videoElement?.error?.code);
+      console.error("Error message:", videoElement?.error?.message);
+      setVideoError(true);
+    };
+    
+    if (videoElement) {
+      videoElement.addEventListener('error', handleError);
+      return () => videoElement.removeEventListener('error', handleError);
+    }
+  }, []);
 
   return (
     <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4 flex flex-col">
@@ -75,16 +200,20 @@ const LiveCameraComponent = ({ selectedCamera, onUpdateStats }) => {
             <video
               ref={videoRef}
               className="w-full h-full object-cover"
+              src={currentVideoUrl}
               autoPlay
               loop
               muted
               playsInline
-              onError={() => setVideoError(true)}
-              poster="https://via.placeholder.com/640x360?text=Loading+Camera+Feed"
-            >
-              <source src={selectedCamera.videoUrl} type="video/mp4" />
-              Your browser does not support the video tag.
-            </video>
+              preload="auto"
+              crossOrigin="anonymous"
+              onError={(e) => {
+                console.error("Video error event:", e);
+                console.error("Video error details:", videoRef.current?.error);
+                setVideoError(true);
+              }}
+              poster="data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNjQwIiBoZWlnaHQ9IjM2MCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iNjQwIiBoZWlnaHQ9IjM2MCIgZmlsbD0iIzEyMjAyQyIvPjx0ZXh0IHg9IjUwJSIgeT0iNTAlIiBmb250LWZhbWlseT0iQXJpYWwsIHNhbnMtc2VyaWYiIGZvbnQtc2l6ZT0iMjQiIGZpbGw9IiNmZmZmZmYiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGRvbWluYW50LWJhc2VsaW5lPSJtaWRkbGUiPkxvYWRpbmcgQ2FtZXJhIEZlZWQ8L3RleHQ+PC9zdmc+"
+            />
           ) : (
             <div className="w-full h-full flex items-center justify-center bg-gray-800 text-gray-400">
               No camera selected
@@ -102,6 +231,12 @@ const LiveCameraComponent = ({ selectedCamera, onUpdateStats }) => {
                 <ShieldAlert size={50} className="mx-auto mb-2 text-red-500" />
                 <p className="text-white font-semibold text-lg">Video Error</p>
                 <p className="text-white text-sm">Unable to load camera feed</p>
+                <button 
+                  onClick={retryVideoLoad}
+                  className="mt-4 bg-blue-500 hover:bg-blue-600 text-white py-2 px-4 rounded-lg flex items-center mx-auto"
+                >
+                  <RefreshCw size={16} className="mr-2" /> Retry Loading
+                </button>
               </div>
             </div>
           )}

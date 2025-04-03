@@ -24,9 +24,6 @@ logger = logging.getLogger(__name__)
 FACE_UPLOADS_DIR = os.path.join(settings.UPLOAD_DIR, "faces")
 os.makedirs(FACE_UPLOADS_DIR, exist_ok=True)
 
-# Store face encodings in memory for quick lookup during tracking session
-face_encodings_cache = {}
-
 @router.post("/track-person")
 async def track_person(
     background_tasks: BackgroundTasks,

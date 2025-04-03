@@ -1,11 +1,13 @@
 import uvicorn
 import logging
+import asyncio
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.api.routes import router as api_router
 from app.core.config import settings
 from database import init_db
 from app.directory_initializer import ensure_app_directories
+from app.core.websocket import start_websocket_manager_tasks
 
 # Set up logging
 logging.basicConfig(
@@ -44,6 +46,10 @@ def create_app():
 
 app = create_app()
 
+@app.get("/health")
+def health_check():
+    return {"status": "ok"}
+
 @app.on_event("startup")
 async def startup_event():
     try:
@@ -53,6 +59,11 @@ async def startup_event():
         logger.info("Initializing database...")
         await init_db()
         logger.info("Database initialized successfully")
+        
+        # Start WebSocket manager background tasks
+        logger.info("Starting WebSocket manager tasks...")
+        asyncio.create_task(start_websocket_manager_tasks())
+        logger.info("WebSocket manager tasks started")
     except Exception as e:
         logger.error(f"Error during startup: {str(e)}")
         # Print the full traceback
