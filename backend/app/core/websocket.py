@@ -1,105 +1,193 @@
-from fastapi import WebSocket, status
-from typing import Dict, List
-import logging
+import asyncio
 import json
-import traceback
+import logging
+from typing import Dict, Set, Any
+from fastapi import WebSocket, WebSocketDisconnect
+from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
+class WebSocketMessage(BaseModel):
+    """
+    Standardized WebSocket message structure
+    """
+    type: str
+    data: Dict[str, Any] = {}
+
 class ConnectionManager:
     """
-    Manager for WebSocket connections supporting multiple clients
+    Manages WebSocket connections with advanced features
     """
     def __init__(self):
-        self.active_connections: Dict[str, WebSocket] = {}
+        # Store active WebSocket connections
+        self.active_connections: Set[WebSocket] = set()
         
+        # Tracked sessions for specific clients
+        self.client_sessions: Dict[str, Set[WebSocket]] = {}
+        
+        # Message queues for offline/buffering support
+        self.message_queues: Dict[str, list] = {}
+        
+        # Connection tracking
+        self._lock = asyncio.Lock()
+        
+        # Health check and reconnection management
+        self.connection_timestamps: Dict[WebSocket, float] = {}
+
     async def connect(self, websocket: WebSocket, client_id: str = None):
         """
-        Accept a WebSocket connection and store it
+        Establish a new WebSocket connection
+        
+        Args:
+            websocket (WebSocket): Incoming WebSocket connection
+            client_id (str, optional): Unique identifier for the client
         """
-        try:
-            # Generate client ID if not provided
-            if client_id is None:
-                import uuid
-                client_id = f"client_{uuid.uuid4().hex[:8]}"
+        await websocket.accept()
+        
+        async with self._lock:
+            # Add to global connections
+            self.active_connections.add(websocket)
+            
+            # Track connection timestamp
+            self.connection_timestamps[websocket] = asyncio.get_event_loop().time()
+            
+            # Manage client-specific sessions
+            if client_id:
+                if client_id not in self.client_sessions:
+                    self.client_sessions[client_id] = set()
+                self.client_sessions[client_id].add(websocket)
                 
-            # Accept the connection
-            await websocket.accept()
-            logger.info(f"WebSocket connection accepted: {client_id}")
+                # Send any queued messages
+                if client_id in self.message_queues:
+                    for message in self.message_queues[client_id]:
+                        await self.send_message(websocket, message)
+                    # Clear queue after sending
+                    del self.message_queues[client_id]
             
-            # Store the connection
-            self.active_connections[client_id] = websocket
-            
-            # Send initial connection confirmation
-            await websocket.send_json({
-                "type": "connection_established",
-                "client_id": client_id
-            })
-            
-            return client_id
-            
-        except Exception as e:
-            logger.error(f"Error accepting WebSocket connection: {str(e)}")
-            logger.error(traceback.format_exc())
-            # Try to close with error if possible
-            try:
-                await websocket.close(code=status.WS_1011_INTERNAL_ERROR)
-            except Exception as close_error:
-                logger.error(f"Error closing WebSocket: {str(close_error)}")
-            raise
-    
+            logger.info(f"New WebSocket connection added. Total: {len(self.active_connections)}")
+
     def disconnect(self, websocket: WebSocket, client_id: str = None):
         """
         Remove a WebSocket connection
+        
+        Args:
+            websocket (WebSocket): Connection to remove
+            client_id (str, optional): Client identifier
         """
         try:
-            if client_id and client_id in self.active_connections:
-                logger.info(f"Client disconnected: {client_id}")
-                del self.active_connections[client_id]
-            else:
-                # Find by websocket object
-                for cid, ws in list(self.active_connections.items()):
-                    if ws == websocket:
-                        logger.info(f"Client disconnected: {cid}")
-                        del self.active_connections[cid]
-                        break
-        except Exception as e:
-            logger.error(f"Error disconnecting client: {str(e)}")
-    
-    async def broadcast(self, message):
-        """
-        Broadcast message to all connected clients
-        """
-        if not self.active_connections:
-            logger.debug("No active connections for broadcast")
-            return
+            self.active_connections.remove(websocket)
             
-        # Convert message to JSON if it's a dict
-        if isinstance(message, dict):
-            message_str = json.dumps(message)
-        else:
-            message_str = message
+            # Remove from client sessions
+            if client_id and client_id in self.client_sessions:
+                self.client_sessions[client_id].discard(websocket)
+                
+                # Clean up empty session
+                if not self.client_sessions[client_id]:
+                    del self.client_sessions[client_id]
             
-        # Send to all active connections
-        disconnected_clients = []
-        
-        for client_id, websocket in self.active_connections.items():
-            try:
-                if isinstance(message, dict):
-                    await websocket.send_json(message)
-                else:
-                    await websocket.send_text(message_str)
-            except Exception as e:
-                logger.error(f"Error sending to client {client_id}: {str(e)}")
-                disconnected_clients.append(client_id)
-        
-        # Clean up disconnected clients
-        for client_id in disconnected_clients:
-            self.disconnect(None, client_id)
+            # Remove connection timestamp
+            del self.connection_timestamps[websocket]
             
-    def get_active_connections(self):
-        """Get number of active connections"""
-        return len(self.active_connections)
+            logger.info(f"WebSocket connection removed. Total: {len(self.active_connections)}")
+        except KeyError:
+            pass
 
-# Global WebSocket manager instance
+    async def send_message(self, websocket: WebSocket, message: Dict[str, Any]):
+        """
+        Send a message to a specific WebSocket
+        
+        Args:
+            websocket (WebSocket): Target WebSocket
+            message (Dict): Message to send
+        """
+        try:
+            await websocket.send_json(message)
+        except Exception as e:
+            logger.error(f"Error sending message: {str(e)}")
+
+    async def broadcast(self, 
+                        message: Dict[str, Any], 
+                        filter_type: str = None, 
+                        client_id: str = None):
+        """
+        Broadcast a message to all or filtered connections
+        
+        Args:
+            message (Dict): Message to broadcast
+            filter_type (str, optional): Filter connections by message type
+            client_id (str, optional): Send to specific client's sessions
+        """
+        async with self._lock:
+            # No active connections
+            if not self.active_connections:
+                logger.warning("No active WebSocket connections")
+                return
+            
+            # Prepare message
+            broadcast_message = {
+                "timestamp": asyncio.get_event_loop().time(),
+                **message
+            }
+            
+            # Client-specific broadcast
+            if client_id:
+                if client_id not in self.client_sessions:
+                    # Queue message for offline client
+                    if client_id not in self.message_queues:
+                        self.message_queues[client_id] = []
+                    self.message_queues[client_id].append(broadcast_message)
+                    return
+                
+                # Send to specific client's sessions
+                target_connections = self.client_sessions[client_id]
+            else:
+                # Default to all connections
+                target_connections = self.active_connections
+            
+            # Broadcast to filtered connections
+            for connection in target_connections:
+                try:
+                    await self.send_message(connection, broadcast_message)
+                except Exception as e:
+                    logger.error(f"Broadcast error: {str(e)}")
+                    self.disconnect(connection)
+
+    async def clean_stale_connections(self, timeout: float = 300.0):
+        """
+        Clean up stale WebSocket connections
+        
+        Args:
+            timeout (float): Connection inactivity timeout in seconds
+        """
+        current_time = asyncio.get_event_loop().time()
+        
+        async with self._lock:
+            stale_connections = [
+                ws for ws, timestamp in self.connection_timestamps.items()
+                if current_time - timestamp > timeout
+            ]
+            
+            for connection in stale_connections:
+                self.disconnect(connection)
+                logger.info(f"Removed stale WebSocket connection")
+
+    async def start_cleanup_task(self, interval: float = 300.0):
+        """
+        Start periodic cleanup of stale connections
+        
+        Args:
+            interval (float): Cleanup interval in seconds
+        """
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                await self.clean_stale_connections()
+            except Exception as e:
+                logger.error(f"Connection cleanup error: {str(e)}")
+
+# Global WebSocket connection manager
 websocket_manager = ConnectionManager()
+
+# Background task to start cleanup
+async def start_websocket_cleanup():
+    await websocket_manager.start_cleanup_task()

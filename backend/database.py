@@ -72,19 +72,13 @@ class Detection(Base):
     image_path = Column(String(500))
     detection_metadata = Column(JSON, nullable=True)
     
-    # Camera ID for real-time and recorded streams
+    # Add this field to match your schema
     camera_id = Column(Integer, nullable=True)
     
-    # Demographic and appearance fields
+    # Your other fields...
     gender = Column(String(20), nullable=True)
     age_group = Column(String(20), nullable=True)
     clothing_color = Column(String(30), nullable=True)
-    
-    # Additional fields for real-time processing
-    keypoints = Column(JSON, nullable=True)  # For pose detection keypoints
-    track_id = Column(String(50), nullable=True)  # For persistent person tracking
-    zone = Column(String(50), nullable=True)  # For zone-based analytics (chest, waist, etc.)
-    incident_id = Column(Integer, nullable=True)  # Link to incident if this detection triggered one
 
 class Incident(Base):
     __tablename__ = "incidents"
@@ -164,19 +158,6 @@ class DemographicsSummary(Base):
     # Summary JSON for flexibility
     summary_data = Column(JSON, nullable=True)
 
-# New class for camera management
-class Camera(Base):
-    __tablename__ = "cameras"
-    
-    id = Column(Integer, primary_key=True)
-    name = Column(String(100), nullable=False)
-    location = Column(String(100), nullable=True)
-    stream_url = Column(String(500), nullable=True)  # For RTSP/HTTP streams
-    status = Column(String(50), default="offline")  # online, offline, maintenance
-    camera_type = Column(String(50), default="fixed")  # fixed, ptz, dome
-    last_active = Column(DateTime, nullable=True)
-    config = Column(JSON, nullable=True)  # Store camera-specific settings
-
 # Database operations
 async def init_db():
     async with engine.begin() as conn:
@@ -254,82 +235,18 @@ async def add_video(video_data: dict):
         return video.id
 
 async def add_detection(detection_data: dict) -> int:
-    """
-    Add a new detection to the database
-    
-    Args:
-        detection_data (dict): Detection data to add
-        
-    Returns:
-        int: ID of the created detection
-    """
-    try:
-        async with async_session() as session:
-            # Create detection object
-            detection = Detection(
-                video_id=detection_data.get('video_id'),
-                camera_id=detection_data.get('camera_id'),
-                timestamp=detection_data.get('timestamp', datetime.now()),
-                frame_number=detection_data.get('frame_number', 0),
-                detection_type=detection_data.get('detection_type'),
-                confidence=detection_data.get('confidence'),
-                bbox=detection_data.get('bbox'),
-                class_name=detection_data.get('class_name'),
-                image_path=detection_data.get('image_path'),
-                keypoints=detection_data.get('keypoints'),
-                zone=detection_data.get('zone'),
-                gender=detection_data.get('gender'),
-                age_group=detection_data.get('age_group'),
-                clothing_color=detection_data.get('clothing_color'),
-                track_id=detection_data.get('track_id'),
-                detection_metadata=detection_data.get('detection_metadata', {}),
-            )
-            session.add(detection)
-            await session.commit()
-            await session.refresh(detection)
-            return detection.id
-    except Exception as e:
-        logger.error(f"Error adding detection: {str(e)}")
-        # Return 0 instead of raising to avoid disrupting the detection pipeline
-        return 0
+    async with async_session() as session:
+        detection = Detection(**detection_data)
+        session.add(detection)
+        await session.commit()
+        return detection.id
 
 async def add_incident(incident_data: dict) -> int:
-    """
-    Add a new incident to the database
-    
-    Args:
-        incident_data (dict): Incident data to add
-        
-    Returns:
-        int: ID of the created incident
-    """
-    try:
-        async with async_session() as session:
-            # Create incident object
-            incident = Incident(
-                video_id=incident_data.get('video_id'),
-                timestamp=incident_data.get('timestamp', datetime.now()),
-                location=incident_data.get('location', 'Unknown'),
-                type=incident_data.get('type'),
-                description=incident_data.get('description'),
-                image_path=incident_data.get('image_path'),
-                video_url=incident_data.get('video_url'),
-                severity=incident_data.get('severity', 'medium'),
-                detection_ids=incident_data.get('detection_ids', []),
-                frame_number=incident_data.get('frame_number'),
-                duration=incident_data.get('duration'),
-                confidence=incident_data.get('confidence'),
-                is_resolved=incident_data.get('is_resolved', False),
-                resolution_notes=incident_data.get('resolution_notes')
-            )
-            session.add(incident)
-            await session.commit()
-            await session.refresh(incident)
-            return incident.id
-    except Exception as e:
-        logger.error(f"Error adding incident: {str(e)}")
-        # Return 0 instead of raising to avoid disrupting the detection pipeline
-        return 0
+    async with async_session() as session:
+        incident = Incident(**incident_data)
+        session.add(incident)
+        await session.commit()
+        return incident.id
 
 async def update_video_status(video_id: int, status: str, processed_path: str = None):
     async with async_session() as session:
@@ -422,41 +339,31 @@ async def get_db():
             await session.close()
 
 async def add_detections_bulk(detections: List[dict]):
-    """Add multiple detections in bulk"""
-    async with async_session() as session:
-        try:
-            detection_objects = []
-            for det in detections:
-                detection = Detection(
-                    video_id=det.get("video_id"),
-                    camera_id=det.get("camera_id"),
-                    timestamp=det.get("timestamp", datetime.now()),
-                    frame_number=det.get("frame_number", 0),
-                    detection_type=det.get("detection_type", "unknown"),
-                    confidence=det.get("confidence", 0.0),
-                    bbox=det.get("bbox", []),
-                    class_name=det.get("class_name"),
-                    image_path=det.get("image_path"),
-                    gender=det.get("gender"),
-                    age_group=det.get("age_group"),
-                    clothing_color=det.get("clothing_color"),
-                    keypoints=det.get("keypoints"),
-                    track_id=det.get("track_id"),
-                    zone=det.get("zone"),
-                    incident_id=det.get("incident_id"),
-                    detection_metadata=det.get("detection_metadata", {})
+    """Add multiple detections to the database in bulk"""
+    try:
+        async with async_session() as session:
+            # Create Detection objects in bulk
+            detection_objects = [
+                Detection(
+                    video_id=det["video_id"],
+                    timestamp=det["timestamp"],
+                    frame_number=det["frame_number"],
+                    detection_type=det["detection_type"],
+                    confidence=det["confidence"],
+                    bbox=det["bbox"],
+                    class_name=det["class_name"],
+                    image_path=det["image_path"]
                 )
-                detection_objects.append(detection)
+                for det in detections
+            ]
             
-            if detection_objects:
-                session.add_all(detection_objects)
-                await session.commit()
-                return True
-            return False
-        except Exception as e:
-            logger.error(f"Error adding bulk detections: {str(e)}")
-            await session.rollback()
-            return False
+            # Bulk insert all detections
+            session.add_all(detection_objects)
+            await session.commit()
+            
+    except Exception as e:
+        logger.error(f"Error in bulk detection insert: {str(e)}")
+        raise 
 
 async def update_incident(incident_id: int, update_data: dict):
     """Update an existing incident with new information"""
@@ -602,172 +509,3 @@ async def find_customers_by_face(face_encoding, similarity_threshold=0.6, limit=
         except Exception as e:
             logger.error(f"Error searching customers by face: {str(e)}")
             return []
-
-async def add_camera(camera_data):
-    """Add a new camera"""
-    try:
-        async with async_session() as session:
-            camera = Camera(**camera_data)
-            session.add(camera)
-            await session.commit()
-            await session.refresh(camera)
-            return camera.id
-    except Exception as e:
-        logger.error(f"Error adding camera: {str(e)}")
-        raise
-
-async def get_cameras():
-    """Get all registered cameras"""
-    async with async_session() as session:
-        result = await session.execute(select(Camera))
-        cameras = result.scalars().all()
-        return [
-            {
-                "id": camera.id,
-                "name": camera.name,
-                "location": camera.location,
-                "status": camera.status,
-                "stream_url": camera.stream_url,
-                "camera_type": camera.camera_type,
-                "last_active": camera.last_active.isoformat() if camera.last_active else None,
-                "config": camera.config
-            }
-            for camera in cameras
-        ]
-
-async def update_camera_status(camera_id: int, status: str, stream_url: str = None):
-    """
-    Update camera status
-    
-    Args:
-        camera_id (int): Camera ID
-        status (str): New status
-        stream_url (str, optional): Stream URL to update
-    """
-    async with async_session() as session:
-        # Get camera if exists
-        camera = await session.get(Camera, camera_id)
-        
-        if camera:
-            # Update status
-            camera.status = status
-            camera.last_active = datetime.now() if status == 'online' else camera.last_active
-            
-            # Update stream URL if provided
-            if stream_url:
-                camera.stream_url = stream_url
-            
-            await session.commit()
-            return True
-        else:
-            # Create a new camera if it doesn't exist
-            new_camera = Camera(
-                id=camera_id,
-                name=f"Camera {camera_id}",
-                status=status,
-                stream_url=stream_url,
-                last_active=datetime.now() if status == 'online' else None
-            )
-            session.add(new_camera)
-            await session.commit()
-            return True
-
-async def get_detections_by_camera(camera_id: int, limit: int = 100) -> List[dict]:
-    """
-    Get detections for a specific camera
-    
-    Args:
-        camera_id (int): Camera ID
-        limit (int): Maximum number of detections to return
-    
-    Returns:
-        List[dict]: List of detection data
-    """
-    async with async_session() as session:
-        query = select(Detection).where(
-            Detection.camera_id == camera_id
-        ).order_by(
-            Detection.timestamp.desc()
-        ).limit(limit)
-        
-        result = await session.execute(query)
-        detections = result.scalars().all()
-        
-        return [
-            {
-                "id": d.id,
-                "timestamp": d.timestamp.isoformat(),
-                "detection_type": d.detection_type,
-                "confidence": d.confidence,
-                "bbox": d.bbox,
-                "class_name": d.class_name,
-                "zone": d.zone,
-                "incident_id": d.incident_id,
-                "frame_number": d.frame_number,
-                "metadata": d.detection_metadata
-            }
-            for d in detections
-        ]
-
-async def get_detection_stats(camera_id: int = None, time_range: int = 24) -> dict:
-    """
-    Get detection statistics
-    
-    Args:
-        camera_id (int, optional): Camera ID to filter by
-        time_range (int): Hours to include in stats (default: 24)
-    
-    Returns:
-        dict: Detection statistics
-    """
-    async with async_session() as session:
-        # Base query for recent detections
-        start_time = datetime.now() - timedelta(hours=time_range)
-        
-        if camera_id:
-            # Get stats for specific camera
-            query = select(Detection).where(
-                Detection.camera_id == camera_id,
-                Detection.timestamp >= start_time
-            )
-        else:
-            # Get stats for all cameras
-            query = select(Detection).where(
-                Detection.timestamp >= start_time
-            )
-        
-        result = await session.execute(query)
-        detections = result.scalars().all()
-        
-        # Calculate stats
-        stats = {
-            "total": len(detections),
-            "by_type": {},
-            "by_class": {},
-            "by_camera": {},
-            "theft_incidents": 0,
-            "loitering_incidents": 0
-        }
-        
-        # Count by detection type
-        for detection in detections:
-            # Count by detection type
-            detection_type = detection.detection_type
-            stats["by_type"][detection_type] = stats["by_type"].get(detection_type, 0) + 1
-            
-            # Count by class name
-            class_name = detection.class_name or "unknown"
-            stats["by_class"][class_name] = stats["by_class"].get(class_name, 0) + 1
-            
-            # Count by camera
-            cam_id = detection.camera_id
-            if cam_id:
-                stats["by_camera"][cam_id] = stats["by_camera"].get(cam_id, 0) + 1
-            
-            # Count incidents
-            if detection_type == "theft":
-                stats["theft_incidents"] += 1
-            elif detection_type == "loitering":
-                stats["loitering_incidents"] += 1
-        
-        return stats
