@@ -1,23 +1,481 @@
 import os
-os.environ['TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD'] = '1'
-import cv2
-import numpy as np
-import torch
-import asyncio
-import logging
-import time
 import json
+import time
+import logging
+import asyncio
+import numpy as np
 from pathlib import Path
+from typing import Dict, List, Optional, Set, Any, Union
 from datetime import datetime
-from typing import List, Dict, Optional, Tuple
-from ..core.config import settings
-# from ..core.websocket import websocket_manager
-import face_recognition
-import pickle
-import uuid
-from database import update_customer_face_encoding
+
+import cv2
+from aiortc import MediaStreamTrack, RTCPeerConnection, RTCSessionDescription, VideoStreamTrack
+from aiortc.contrib.media import MediaBlackhole, MediaPlayer, MediaRecorder, MediaRelay
+from aiortc.mediastreams import VideoFrame
+
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
+
+# WebRTC peer connections storage
+pcs = set()
+# Media relay for sharing a single video source
+relay = MediaRelay()
+
+class MLVideoStream(VideoStreamTrack):
+    """
+    A video stream track that processes frames with ML models before sending.
+    This allows us to stream inference results in real-time via WebRTC.
+    """
+    def __init__(self, processor, video_path=None, detection_type="all", camera_id=None, resolution="original"):
+        super().__init__()
+        self.processor = processor
+        self.frame_counter = 0
+        self.camera_id = camera_id
+        self.detection_type = detection_type
+        self.resolution = resolution
+        self.video_path = video_path
+        
+        # Set up logging
+        logger.info(f"Initializing MLVideoStream with video_path={video_path}, camera_id={camera_id}, resolution={resolution}")
+        
+        # Open video source (file or camera)
+        if video_path and os.path.exists(video_path):
+            logger.info(f"Opening video file: {video_path}")
+            self.capture = cv2.VideoCapture(video_path)
+        elif video_path:
+            # Try to find the file in uploads/raw directory
+            upload_dir = os.path.join(settings.UPLOAD_DIR, "raw")
+            basename = os.path.basename(video_path)
+            potential_path = os.path.join(upload_dir, basename)
+            
+            if os.path.exists(potential_path):
+                logger.info(f"Found video at: {potential_path}")
+                self.video_path = potential_path
+                self.capture = cv2.VideoCapture(potential_path)
+            else:
+                logger.warning(f"Video not found, using default test video")
+                # Use a default test video or pattern
+                self.capture = cv2.VideoCapture(0)  # Change to a test pattern or default video
+        else:
+            # Use camera
+            logger.info(f"Opening camera id: {camera_id if camera_id is not None else 0}")
+            self.capture = cv2.VideoCapture(camera_id if camera_id is not None else 0)
+        
+        # Check if video/camera opened successfully
+        if not self.capture.isOpened():
+            logger.error(f"Failed to open video source: {video_path or camera_id}")
+            # Don't raise exception, we'll handle this in recv by returning a black frame
+            self.width = 1280
+            self.height = 720
+        else:
+            # Get original dimensions
+            self.original_width = int(self.capture.get(cv2.CAP_PROP_FRAME_WIDTH))
+            self.original_height = int(self.capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            logger.info(f"Original video dimensions: {self.original_width}x{self.original_height}")
+            
+            # Set target dimensions based on resolution parameter
+            if resolution == "original":
+                self.width = self.original_width
+                self.height = self.original_height
+            elif resolution == "720p":
+                self.height = 720
+                self.width = int((self.height / self.original_height) * self.original_width)
+                self.width = self.width - (self.width % 2)  # Ensure even width
+            elif resolution == "1080p":
+                self.height = 1080
+                self.width = int((self.height / self.original_height) * self.original_width)
+                self.width = self.width - (self.width % 2)  # Ensure even width
+            else:
+                # Default to 720p if invalid resolution specified
+                self.height = 720
+                self.width = 1280
+        
+        # Get FPS
+        self.fps = int(self.capture.get(cv2.CAP_PROP_FPS))
+        if self.fps <= 0:
+            self.fps = 30  # Default FPS if not available
+        
+        logger.info(f"Stream initialized with resolution: {self.width}x{self.height}, FPS: {self.fps}")
+
+    async def recv(self):
+        try:
+            self.frame_counter += 1
+            
+            # Read frame from video/camera
+            ret, frame = self.capture.read()
+            
+            if not ret:
+                # If end of video, loop back to beginning
+                self.capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                ret, frame = self.capture.read()
+                if not ret:
+                    # If still can't read, use a black frame
+                    frame = np.zeros((self.height, self.width, 3), dtype=np.uint8)
+                    cv2.putText(frame, "Video Error", (50, self.height//2),
+                                cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+            
+            # Resize frame to target resolution if needed
+            frame_height, frame_width = frame.shape[:2]
+            if self.width != frame_width or self.height != frame_height:
+                try:
+                    frame = cv2.resize(frame, (self.width, self.height), interpolation=cv2.INTER_AREA)
+                    logger.debug(f"Resized frame from {frame_width}x{frame_height} to {self.width}x{self.height}")
+                except Exception as e:
+                    logger.error(f"Error resizing frame: {str(e)}")
+                    # Continue with original frame if resize fails
+            
+            # Create a copy for processing
+            processed_frame = frame.copy()
+            
+            # Add overlay text with resolution and frame number
+            cv2.putText(processed_frame, f"Frame: {self.frame_counter}", (10, 30), 
+                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+            cv2.putText(processed_frame, f"Resolution: {self.width}x{self.height}", (10, 60), 
+                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+            
+            # Convert the processed frame to the format expected by aiortc
+            video_frame = VideoFrame.from_ndarray(processed_frame, format="bgr24")
+            video_frame.pts = self.frame_counter * 1000  # timestamp in milliseconds
+            video_frame.time_base = 1000  # milliseconds timebase
+            
+            return video_frame
+            
+        except Exception as e:
+            logger.error(f"Error in recv method: {str(e)}")
+            logger.exception("Full stack trace:")
+            
+            # Return a black frame with error message as fallback
+            dummy_frame = np.zeros((self.height, self.width, 3), dtype=np.uint8)
+            cv2.putText(dummy_frame, f"Error: {str(e)[:30]}...", (50, self.height//2),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+            
+            video_frame = VideoFrame.from_ndarray(dummy_frame, format="bgr24")
+            video_frame.pts = self.frame_counter * 1000  # timestamp in milliseconds
+            video_frame.time_base = 1000  # milliseconds timebase
+            return video_frame
+    
+    async def process_loitering_detection(self, frame, detections):
+        """Process loitering detection logic in real-time"""
+        # Create a copy of the frame for visualization
+        vis_frame = frame.copy()
+        
+        person_detections = [d for d in detections if d.get("class_name") == "person"]
+        
+        # Extract deep features for person tracking
+        current_persons = []
+        for det in person_detections:
+            bbox = det.get("bbox", [])
+            if len(bbox) != 4:
+                continue
+                
+            x1, y1, x2, y2 = map(int, bbox)
+            if x1 < 0 or y1 < 0 or x2 <= x1 or y2 <= y1:
+                continue
+                
+            # Extract person region
+            person_img = frame[y1:y2, x1:x2]
+            if person_img.size == 0:
+                continue
+                
+            # Use simple color histogram as feature (you can replace with more sophisticated features)
+            try:
+                # Simple histogram feature
+                hist_feature = cv2.calcHist([person_img], [0, 1, 2], None, [8, 8, 8], [0, 256, 0, 256, 0, 256])
+                hist_feature = cv2.normalize(hist_feature, hist_feature).flatten()
+                
+                # Store the person with bbox and features
+                current_persons.append({
+                    "bbox": bbox,
+                    "features": hist_feature,
+                    "detection_conf": det.get("confidence", 0),
+                    "id": -1  # Will be assigned during matching
+                })
+            except Exception as e:
+                logger.error(f"Error extracting features: {str(e)}")
+        
+        # Match current persons with tracked persons
+        if not self.tracked_persons:
+            # Initialize tracking on first frame
+            for i, person in enumerate(current_persons):
+                person["id"] = i
+                self.tracked_persons.append(person)
+                self.loitering_timers[i] = 0
+        else:
+            # Match persons across frames
+            for cur_person in current_persons:
+                best_match = -1
+                best_score = float('inf')
+                best_iou = 0
+                
+                for i, tracked in enumerate(self.tracked_persons):
+                    # Calculate IoU between bounding boxes
+                    iou = self.calculate_iou(cur_person["bbox"], tracked["bbox"])
+                    
+                    # Calculate feature distance
+                    feat_dist = np.linalg.norm(cur_person["features"] - tracked["features"])
+                    
+                    # Combined score (lower is better)
+                    score = feat_dist * (1.0 - iou)
+                    
+                    if iou > 0.3 and score < best_score:
+                        best_match = i
+                        best_score = score
+                        best_iou = iou
+                
+                if best_match >= 0:
+                    # Update tracked person with new position and add to loitering time
+                    cur_person["id"] = self.tracked_persons[best_match]["id"]
+                    person_id = cur_person["id"]
+                    
+                    # Update loitering time (assuming ~30fps)
+                    if person_id in self.loitering_timers:
+                        self.loitering_timers[person_id] += time_delta if 'time_delta' in locals() else 0.033
+                    else:
+                        self.loitering_timers[person_id] = 0
+                    
+                    # Replace the tracked person with the current one
+                    self.tracked_persons[best_match] = cur_person
+                else:
+                    # New person detected
+                    person_id = max([p["id"] for p in self.tracked_persons], default=-1) + 1
+                    cur_person["id"] = person_id
+                    self.tracked_persons.append(cur_person)
+                    self.loitering_timers[person_id] = 0
+        
+        # Remove stale tracks (not seen in current frame)
+        current_ids = [p["id"] for p in current_persons]
+        self.tracked_persons = [p for p in self.tracked_persons if p["id"] in current_ids]
+        
+        # Draw loitering visualization
+        for person in self.tracked_persons:
+            person_id = person["id"]
+            x1, y1, x2, y2 = person["bbox"]
+            loitering_time = self.loitering_timers.get(person_id, 0)
+            
+            if loitering_time >= self.loitering_threshold:
+                # Person is loitering
+                color = (0, 0, 255)  # Red for loitering
+                cv2.rectangle(vis_frame, (x1, y1), (x2, y2), color, 2)
+                
+                # Add loitering label with time
+                label = f"LOITERING ID:{person_id} ({loitering_time:.1f}s)"
+                cv2.putText(vis_frame, label, (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+                
+                # Add alert box at top of screen
+                alert_text = f"⚠️ LOITERING ALERT: Person {person_id} ({loitering_time:.1f}s)"
+                cv2.putText(vis_frame, alert_text, (10, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+            else:
+                # Regular tracking visualization
+                color = (0, 255, 0)  # Green for normal tracking
+                cv2.rectangle(vis_frame, (x1, y1), (x2, y2), color, 2)
+                
+                # Add tracking label with time
+                label = f"Person {person_id} ({loitering_time:.1f}s)"
+                cv2.putText(vis_frame, label, (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+        
+        return vis_frame
+    
+    async def process_theft_detection(self, frame, detections):
+        """Process theft detection logic in real-time"""
+        # Create a copy of the frame for visualization
+        vis_frame = frame.copy()
+        
+        # Get person and object detections
+        person_detections = [d for d in detections if d.get("class_name") == "person"]
+        object_detections = [d for d in detections if d.get("class_name") not in ["person", "background"]]
+        
+        # Get pose keypoints for hand tracking
+        keypoint_detections = [d for d in detections if "keypoints" in d and d.get("keypoints")]
+        
+        # Track objects first
+        if not self.tracked_objects and object_detections:
+            # Initialize object tracking
+            for i, obj in enumerate(object_detections):
+                obj_bbox = obj.get("bbox", [])
+                if len(obj_bbox) != 4:
+                    continue
+                
+                self.tracked_objects.append({
+                    "id": i,
+                    "bbox": obj_bbox,
+                    "class_name": obj.get("class_name", "object"),
+                    "confidence": obj.get("confidence", 0)
+                })
+        else:
+            # Update tracked objects
+            for obj in object_detections:
+                obj_bbox = obj.get("bbox", [])
+                if len(obj_bbox) != 4:
+                    continue
+                
+                # Find best match in tracked objects
+                best_match = -1
+                best_iou = 0
+                
+                for i, tracked_obj in enumerate(self.tracked_objects):
+                    iou = self.calculate_iou(obj_bbox, tracked_obj["bbox"])
+                    if iou > 0.5 and iou > best_iou:
+                        best_match = i
+                        best_iou = iou
+                
+                if best_match >= 0:
+                    # Update tracked object
+                    self.tracked_objects[best_match]["bbox"] = obj_bbox
+                    self.tracked_objects[best_match]["confidence"] = obj.get("confidence", 0)
+                else:
+                    # New object
+                    obj_id = max([o["id"] for o in self.tracked_objects], default=-1) + 1
+                    self.tracked_objects.append({
+                        "id": obj_id,
+                        "bbox": obj_bbox,
+                        "class_name": obj.get("class_name", "object"),
+                        "confidence": obj.get("confidence", 0)
+                    })
+        
+        # Process person detections with keypoints for hand tracking
+        for person in keypoint_detections:
+            keypoints = person.get("keypoints", [])
+            if not keypoints or len(keypoints) < 17:  # COCO format has 17 keypoints
+                continue
+            
+            person_bbox = person.get("bbox", [])
+            if len(person_bbox) != 4:
+                continue
+            
+            # Get wrist keypoints (9 and 10 in COCO format)
+            left_wrist = keypoints[9] if len(keypoints) > 9 else None
+            right_wrist = keypoints[10] if len(keypoints) > 10 else None
+            
+            # Check for hand proximity to objects
+            for obj in self.tracked_objects:
+                obj_bbox = obj["bbox"]
+                obj_id = obj["id"]
+                
+                # Define hand proximity to object
+                hand_near_object = False
+                
+                # Check left wrist
+                if left_wrist and left_wrist[0] > 0 and left_wrist[1] > 0:
+                    if self.is_point_near_bbox(left_wrist, obj_bbox, threshold=50):
+                        hand_near_object = True
+                        # Draw circle on left wrist
+                        cv2.circle(vis_frame, (int(left_wrist[0]), int(left_wrist[1])), 5, (0, 0, 255), -1)
+                
+                # Check right wrist
+                if right_wrist and right_wrist[0] > 0 and right_wrist[1] > 0:
+                    if self.is_point_near_bbox(right_wrist, obj_bbox, threshold=50):
+                        hand_near_object = True
+                        # Draw circle on right wrist
+                        cv2.circle(vis_frame, (int(right_wrist[0]), int(right_wrist[1])), 5, (0, 0, 255), -1)
+                
+                # Create a unique key for each person-object pair
+                pair_key = f"person_{person.get('id', 0)}_obj_{obj_id}"
+                
+                if hand_near_object:
+                    # Start or update timer
+                    if pair_key not in self.hand_object_timers:
+                        self.hand_object_timers[pair_key] = 0
+                    else:
+                        self.hand_object_timers[pair_key] += time_delta if 'time_delta' in locals() else 0.033
+                    
+                    # Check for theft
+                    if self.hand_object_timers[pair_key] >= self.hand_stay_time:
+                        # Theft detected!
+                        x1, y1, x2, y2 = map(int, obj_bbox)
+                        
+                        # Draw theft alert on object
+                        cv2.rectangle(vis_frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
+                        theft_text = f"⚠️ THEFT: {obj['class_name']} ({self.hand_object_timers[pair_key]:.1f}s)"
+                        cv2.putText(vis_frame, theft_text, (x1, y1-10), 
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+                        
+                        # Draw global alert
+                        cv2.putText(vis_frame, f"⚠️ THEFT ALERT: {obj['class_name']}", (10, 120), 
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                        
+                        # Connect hand to object with a line
+                        if left_wrist and left_wrist[0] > 0 and left_wrist[1] > 0:
+                            cv2.line(vis_frame, (int(left_wrist[0]), int(left_wrist[1])), 
+                                     (int((x1+x2)/2), int((y1+y2)/2)), (0, 0, 255), 2)
+                        
+                        if right_wrist and right_wrist[0] > 0 and right_wrist[1] > 0:
+                            cv2.line(vis_frame, (int(right_wrist[0]), int(right_wrist[1])), 
+                                     (int((x1+x2)/2), int((y1+y2)/2)), (0, 0, 255), 2)
+                else:
+                    # Reset timer if hand is not near the object
+                    if pair_key in self.hand_object_timers:
+                        self.hand_object_timers[pair_key] = 0
+        
+        # Draw objects
+        for obj in self.tracked_objects:
+            x1, y1, x2, y2 = map(int, obj["bbox"])
+            
+            # Check if this object has a theft timer
+            theft_timers = [v for k, v in self.hand_object_timers.items() if f"_obj_{obj['id']}" in k]
+            max_timer = max(theft_timers) if theft_timers else 0
+            
+            if max_timer > 0 and max_timer < self.hand_stay_time:
+                # Object with hand near it but not theft yet
+                color = (0, 165, 255)  # Orange for potential theft
+                cv2.rectangle(vis_frame, (x1, y1), (x2, y2), color, 2)
+                label = f"{obj['class_name']} - TOUCH ({max_timer:.1f}s)"
+                cv2.putText(vis_frame, label, (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+            elif max_timer < self.hand_stay_time:
+                # Regular object
+                color = (0, 255, 0)  # Green for normal object
+                cv2.rectangle(vis_frame, (x1, y1), (x2, y2), color, 2)
+                label = f"{obj['class_name']} {obj['confidence']:.2f}"
+                cv2.putText(vis_frame, label, (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+        
+        return vis_frame
+    
+    def calculate_iou(self, box1, box2):
+        """Calculate intersection over union between two bounding boxes"""
+        x1_1, y1_1, x2_1, y2_1 = box1
+        x1_2, y1_2, x2_2, y2_2 = box2
+        
+        # Calculate intersection area
+        x_left = max(x1_1, x1_2)
+        y_top = max(y1_1, y1_2)
+        x_right = min(x2_1, x2_2)
+        y_bottom = min(y2_1, y2_2)
+        
+        if x_right < x_left or y_bottom < y_top:
+            return 0.0
+            
+        intersection_area = (x_right - x_left) * (y_bottom - y_top)
+        
+        # Calculate union area
+        box1_area = (x2_1 - x1_1) * (y2_1 - y1_1)
+        box2_area = (x2_2 - x1_2) * (y2_2 - y1_2)
+        union_area = box1_area + box2_area - intersection_area
+        
+        if union_area <= 0:
+            return 0.0
+            
+        return intersection_area / union_area
+    
+    def is_point_near_bbox(self, point, bbox, threshold=20):
+        """Check if a point (keypoint) is near a bounding box"""
+        x, y = point[0], point[1]
+        x1, y1, x2, y2 = bbox
+        
+        # Check if point is inside the bbox
+        if x >= x1 and x <= x2 and y >= y1 and y <= y2:
+            return True
+            
+        # Check if point is near the bbox (within threshold)
+        if (x < x1-threshold or x > x2+threshold or 
+            y < y1-threshold or y > y2+threshold):
+            return False
+            
+        return True
+        
+    def stop(self):
+        if self.capture:
+            self.capture.release()
+        super().stop()
 
 class VideoProcessor:
     def __init__(self):
@@ -41,6 +499,119 @@ class VideoProcessor:
             logger.info("DeepSort tracker initialized")
         except ImportError:
             logger.warning("DeepSort not installed. Object tracking will be limited.")
+            
+        # WebRTC video streams by camera ID
+        self.video_streams = {}
+        
+    async def create_rtc_connection(self, offer, camera_id=None, video_path=None, detection_type="all", resolution="original"):
+        """
+        Create a WebRTC peer connection for streaming video with ML processing
+        
+        Args:
+            offer: WebRTC offer from client
+            camera_id: Camera ID for streaming
+            video_path: Video file path for streaming
+            detection_type: Type of detection to perform on frames
+            resolution: Preferred resolution for the video stream (e.g. '720p', '1080p', 'original')
+            
+        Returns:
+            RTCSessionDescription: WebRTC answer
+        """
+        try:
+            # Create RTCPeerConnection with ICE servers
+            logger.info(f"Creating RTCPeerConnection for {video_path or camera_id}")
+            pc = RTCPeerConnection({
+                "iceServers": [
+                    {"urls": "stun:stun.l.google.com:19302"},
+                    {"urls": "stun:stun1.l.google.com:19302"}
+                ]
+            })
+            
+            # Keep track of peer connections
+            pcs.add(pc)
+            
+            # Create video stream
+            logger.info(f"Creating MLVideoStream with resolution {resolution}")
+            video_stream = MLVideoStream(
+                processor=self,
+                video_path=video_path,
+                detection_type=detection_type,
+                camera_id=camera_id,
+                resolution=resolution
+            )
+            
+            # Add track to peer connection
+            logger.info("Adding video track to peer connection")
+            pc.addTrack(relay.subscribe(video_stream))
+            
+            # Log ICE connection state changes
+            @pc.on("iceconnectionstatechange")
+            async def on_iceconnectionstatechange():
+                logger.info(f"ICE connection state changed to: {pc.iceConnectionState}")
+                if pc.iceConnectionState == "failed" or pc.iceConnectionState == "closed":
+                    await self.close_rtc_connection(pc)
+            
+            # Log connection state changes
+            @pc.on("connectionstatechange")
+            async def on_connectionstatechange():
+                logger.info(f"Connection state changed to: {pc.connectionState}")
+                if pc.connectionState == "failed" or pc.connectionState == "closed":
+                    await self.close_rtc_connection(pc)
+            
+            # Set remote description
+            logger.info("Setting remote description (client offer)")
+            await pc.setRemoteDescription(RTCSessionDescription(sdp=offer["sdp"], type=offer["type"]))
+            
+            # Create answer
+            logger.info("Creating answer")
+            answer = await pc.createAnswer()
+            logger.info("Setting local description (answer)")
+            await pc.setLocalDescription(answer)
+            
+            logger.info(f"WebRTC connection established successfully for {video_path or camera_id}")
+            
+            return {"sdp": pc.localDescription.sdp, "type": pc.localDescription.type}
+            
+        except Exception as e:
+            logger.error(f"Error creating WebRTC connection: {str(e)}")
+            logger.exception("Full stack trace:")
+            raise
+    
+    async def close_rtc_connection(self, pc):
+        """Close a WebRTC peer connection and cleanup resources"""
+        logger.info("Closing WebRTC peer connection")
+        pcs.discard(pc)
+        
+        # Close PC
+        await pc.close()
+        
+        # Cleanup video streams that are no longer used
+        for stream_id, stream in list(self.video_streams.items()):
+            in_use = False
+            for other_pc in pcs:
+                for sender in other_pc.getSenders():
+                    if sender.track == stream:
+                        in_use = True
+                        break
+                if in_use:
+                    break
+            
+            if not in_use:
+                logger.info(f"Stopping unused video stream: {stream_id}")
+                stream.stop()
+                del self.video_streams[stream_id]
+        
+    async def close_all_rtc_connections(self):
+        """Close all WebRTC peer connections"""
+        logger.info(f"Closing all {len(pcs)} WebRTC peer connections")
+        coros = [pc.close() for pc in pcs]
+        await asyncio.gather(*coros)
+        pcs.clear()
+        
+        # Stop all video streams
+        for stream_id, stream in self.video_streams.items():
+            stream.stop()
+        self.video_streams.clear()
 
     def _initialize_models(self):
         """Initialize required models"""
@@ -696,12 +1267,11 @@ class VideoProcessor:
                 if frame_count % 100 == 0:
                     current_ids = set(detection['id'] for detection in current_detections)
                     for person_id in list(tracked_persons.keys()):
-                        # Remove if not seen in the last 120 frames (4 seconds at 30fps)
-                        # Make this longer than for theft detection since loitering involves staying in one place
-                        if person_id not in current_ids and frame_count - tracked_persons[person_id]['last_seen_frame'] > 120:
-                            # Keep loitering persons longer for final report
-                            if not tracked_persons[person_id].get('loitering_detected', False):
-                                del tracked_persons[person_id]
+                        # Remove if not seen in the last 60 frames (2 seconds at 30fps)
+                        if person_id not in current_ids and \
+                        'last_seen_frame' in tracked_persons[person_id] and \
+                        frame_count - tracked_persons[person_id]['last_seen_frame'] > 60:
+                            del tracked_persons[person_id]
                 
                 # Write processed frame
                 out.write(frame)
@@ -1336,9 +1906,6 @@ class VideoProcessor:
             if settings.OBJECT_MODEL_PATH.exists():
                 self.object_model = YOLO(str(settings.OBJECT_MODEL_PATH))
                 logger.info("Object detection model loaded successfully")
-            
-            # Initialize face recognition components
-            logger.info("Face recognition system initialized")
                 
         except Exception as e:
             logger.error(f"Error initializing models: {str(e)}")

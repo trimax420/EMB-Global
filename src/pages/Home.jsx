@@ -19,6 +19,7 @@ import { Bar, Line, Pie } from 'react-chartjs-2';
 import { Chart as ChartJS, CategoryScale, LinearScale, BarElement, LineElement, PointElement, ArcElement, Title, Tooltip, Legend } from 'chart.js';
 import { useNavigate } from 'react-router-dom';
 import LiveCameraComponent from '../components/LiveCameraComponent';
+import WebRTCVideoStream from '../components/WebRTCVideoStream';
 import axios from 'axios';
 
 // Register Chart.js components
@@ -32,7 +33,8 @@ const cameras = [
   {
     id: 1,
     name: "Front Entrance",
-    videoUrl: "https://developer-blogs.nvidia.com/wp-content/uploads/2022/12/Figure8-output_blurred-compressed.gif",
+    videoUrl: "E:\\code\\EMB Global\\backend\\uploads\\raw\\cheese-1.mp4",
+    rawPath: "E:\\code\\EMB Global\\backend\\uploads\\raw\\cheese-1.mp4",
     details: { people: 4, vehicles: 1, alerts: 4, objects: 5 },
     status: "online",
     resolution: { width: 640, height: 480 },
@@ -42,7 +44,8 @@ const cameras = [
   {
     id: 2,
     name: "Parking Lot",
-    videoUrl: "https://user-images.githubusercontent.com/11428131/139924111-58637f2e-f2f6-42d8-8812-ab42fece92b4.gif",
+    videoUrl: "E:\\code\\EMB Global\\backend\\uploads\\raw\\cheese-2.mp4",
+    rawPath: "E:\\code\\EMB Global\\backend\\uploads\\raw\\cheese-2.mp4",
     details: { people: 2, vehicles: 3, alerts: 1, objects: 2 },
     status: "online",
     resolution: { width: 640, height: 480 },
@@ -52,7 +55,8 @@ const cameras = [
   {
     id: 3,
     name: "Electronics Department",
-    videoUrl: "https://developer-blogs.nvidia.com/wp-content/uploads/2024/05/gif-people-in-store-bounding-boxes.gif",
+    videoUrl: "E:\\code\\EMB Global\\backend\\uploads\\raw\\Cleaning_acc_section_NVR_2_NVR_2_20250221220849_20250221221420_846094331.mp4",
+    rawPath: "E:\\code\\EMB Global\\backend\\uploads\\raw\\Cleaning_acc_section_NVR_2_NVR_2_20250221220849_20250221221420_846094331.mp4",
     details: { people: 0, vehicles: 0, alerts: 0, objects: 1 },
     status: "online",
     resolution: { width: 640, height: 480 },
@@ -70,6 +74,9 @@ const cameras = [
     capabilities: ["theft_detection"]
   }
 ];
+
+// Log camera data for debugging
+console.log("Camera paths for debugging:", cameras.map(cam => ({id: cam.id, path: cam.videoUrl})));
 
 // Sample time filter data - using a simplified version since we don't need all of this
 const timeFilterData = {
@@ -140,6 +147,7 @@ const Home = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState(null);
   const navigate = useNavigate();
+  const [useWebRTC, setUseWebRTC] = useState(true); // Enable WebRTC by default
 
   // Effect to fetch cameras from API on component mount
   useEffect(() => {
@@ -264,6 +272,13 @@ const Home = () => {
             <FaHistory className="text-sm" />
             View Report
           </button>
+          <button 
+            className={`px-4 py-2 ${useWebRTC ? 'bg-green-500' : 'bg-gray-500'} text-white rounded-lg hover:opacity-90 transition-all duration-200 shadow-sm flex items-center gap-2`}
+            onClick={() => setUseWebRTC(!useWebRTC)}
+          >
+            <FaCamera className="text-sm" />
+            {useWebRTC ? 'WebRTC: ON' : 'WebRTC: OFF'}
+          </button>
         </div>
       </div>
 
@@ -290,10 +305,53 @@ const Home = () => {
       <div className='lg:flex gap-6'>
         {/* Live Security Feed */}
         <div className="lg:w-[70%] mb-6 lg:mb-0">
-          <LiveCameraComponent 
-            selectedCamera={selectedCamera} 
-            onUpdateStats={handleUpdateStats}
-          />
+          {useWebRTC ? (
+            <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+              <div className="bg-slate-800 text-white p-3 px-4 flex justify-between items-center">
+                <h2 className="font-semibold">{selectedCamera.name} - WebRTC Streaming</h2>
+                <span className="text-xs bg-green-500 text-white px-2 py-0.5 rounded-full">Live ML Processing</span>
+              </div>
+              <WebRTCVideoStream
+                cameraId={selectedCamera.id}
+                videoPath={selectedCamera.videoUrl}
+                detectionType="all"
+                className="aspect-video"
+                onUpdateStats={handleUpdateStats}
+                preferredResolution="720p"
+              />
+              <div className="p-4 grid grid-cols-2 md:grid-cols-4 gap-4">
+                <div className="p-3 border rounded-lg bg-blue-50 border-blue-100">
+                  <div className="flex justify-between items-start">
+                    <span className="text-blue-500">People</span>
+                    <span className="text-lg font-bold text-blue-600">{liveStats.people}</span>
+                  </div>
+                </div>
+                <div className="p-3 border rounded-lg bg-orange-50 border-orange-100">
+                  <div className="flex justify-between items-start">
+                    <span className="text-orange-500">Loitering</span>
+                    <span className="text-lg font-bold text-orange-600">{liveStats.loitering}</span>
+                  </div>
+                </div>
+                <div className="p-3 border rounded-lg bg-red-50 border-red-100">
+                  <div className="flex justify-between items-start">
+                    <span className="text-red-500">Theft</span>
+                    <span className="text-lg font-bold text-red-600">{liveStats.theft}</span>
+                  </div>
+                </div>
+                <div className="p-3 border rounded-lg bg-green-50 border-green-100">
+                  <div className="flex justify-between items-start">
+                    <span className="text-green-500">Objects</span>
+                    <span className="text-lg font-bold text-green-600">{liveStats.objects}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <LiveCameraComponent 
+              selectedCamera={selectedCamera} 
+              onUpdateStats={handleUpdateStats}
+            />
+          )}
           
           {/* Available Cameras */}
           <div className='mt-6'>
@@ -326,11 +384,20 @@ const Home = () => {
                     onClick={() => handleCameraSelect(camera)}
                   >
                     <div className='aspect-video'>
-                      <img 
-                        src={camera.videoUrl} 
-                        alt={camera.name}
-                        className='w-full h-full object-cover opacity-80 group-hover:opacity-100 transition-opacity'
-                      />
+                      {camera.videoUrl && camera.videoUrl.includes('mp4') ? (
+                        <div className="w-full h-full flex items-center justify-center bg-gray-800">
+                          <div className="text-center text-white">
+                            <div className="text-blue-400 text-2xl mb-1">📹</div>
+                            <div className="text-sm">{camera.name}</div>
+                          </div>
+                        </div>
+                      ) : (
+                        <img 
+                          src={camera.videoUrl} 
+                          alt={camera.name}
+                          className='w-full h-full object-cover opacity-80 group-hover:opacity-100 transition-opacity'
+                        />
+                      )}
                       {camera.status === 'offline' && (
                         <div className='absolute inset-0 bg-black bg-opacity-60 flex items-center justify-center'>
                           <span className='text-xs font-medium text-white bg-red-500 px-2 py-1 rounded-full'>Offline</span>
