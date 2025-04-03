@@ -1,29 +1,25 @@
 from pathlib import Path
 from typing import List
 from pydantic_settings import BaseSettings
-import os
 
 class Settings(BaseSettings):
     # Base directories
     BASE_DIR: Path = Path(__file__).resolve().parent.parent.parent
-    DATA_DIR: Path = BASE_DIR / "data"
-    UPLOADS_DIR: Path = DATA_DIR / "uploads"
-    PROCESSED_DIR: Path = DATA_DIR / "processed"
-    THUMBNAILS_DIR: Path = DATA_DIR / "thumbnails"
-    SCREENSHOTS_DIR: Path = DATA_DIR / "screenshots"
-    INCIDENTS_DIR: Path = DATA_DIR / "incidents"
-    
-    # Video files directory
-    ROOT_DIR: Path = BASE_DIR
-    VIDEO_FILES_DIR: str = os.getenv("VIDEO_FILES_DIR", str(BASE_DIR / "videos"))
-    MOCK_FRAME_WIDTH: int = 640
-    MOCK_FRAME_HEIGHT: int = 480
-
-    # Model directories and paths
+    UPLOAD_DIR: Path = BASE_DIR / "uploads"
+    PROCESSED_DIR: Path = BASE_DIR / "processed"
+    FRAMES_DIR: Path = BASE_DIR / "frames"
+    ALERTS_DIR: Path = BASE_DIR / "alerts"
+    THUMBNAILS_DIR: Path = BASE_DIR / "thumbnails"
     MODELS_DIR: Path = BASE_DIR / "models"
-    FACE_MODEL_PATH: Path = MODELS_DIR / "face_detection.pt"
-    POSE_MODEL_PATH: Path = MODELS_DIR / "pose_detection.pt"
-    OBJECT_MODEL_PATH: Path = MODELS_DIR / "object_detection.pt"
+    SCREENSHOTS_DIR: Path = BASE_DIR / "screenshots"  # New directory for theft screenshots
+
+    # Model paths
+    FACE_MODEL_PATH: Path = BASE_DIR / "models/yolov8n-face.pt"
+    POSE_MODEL_PATH: Path = BASE_DIR / "models/yolov8n-pose.pt"
+    OBJECT_MODEL_PATH: Path = BASE_DIR / "models/yolov5s.pt"
+    FACE_EXTRACTION_MODEL_PATH: Path = BASE_DIR / "models/yolov8n-face.pt"
+    LOITERING_MODEL_PATH: Path = BASE_DIR / "models/yolov5s.pt"
+    THEFT_MODEL_PATH: Path = BASE_DIR / "models/yolo11n-pose.pt"
 
     # CORS settings
     CORS_ORIGINS: List[str] = [
@@ -34,25 +30,21 @@ class Settings(BaseSettings):
     ]
 
     # Video processing settings
-    SKIP_FRAMES: int = 2  # Process every Nth frame
-    VIDEO_QUALITY: int = 85  # JPEG compression quality for frames
-    TARGET_FPS: int = 15  # Target FPS for realtime streaming
-
-    # Detection settings
-    DETECTION_THRESHOLD: float = 0.6  # Default confidence threshold
+    MAX_WORKERS: int = 2
+    TARGET_PROCESSING_FPS: int = 15
+    DETECTION_THRESHOLD: float = 0.4
+    FRAME_BUFFER_SIZE: int = 32
+    UPDATE_INTERVAL: float = 0.1
+    STATS_UPDATE_INTERVAL: float = 2.0
     
     # Theft detection settings
-    HAND_STAY_TIME_CHEST: float = 2.0  # Seconds to consider hand in chest area suspicious
-    HAND_STAY_TIME_WAIST: float = 1.5  # Seconds to consider hand in waist area suspicious
-    CROP_PADDING: int = 20  # Padding for cropped detection images
-
-    # WebSocket settings
-    PING_INTERVAL: int = 30  # Seconds between WebSocket ping messages
-    STALE_CONNECTION_TIMEOUT: int = 300  # Seconds after which a connection is considered stale
-    MAX_FRAME_WIDTH: int = 640  # Maximum width for streamed frames
+    SKIP_FRAMES: int = 3
+    HAND_STAY_TIME_CHEST: float = 1.0  # seconds before suspicion (chest region)
+    HAND_STAY_TIME_WAIST: float = 1.5  # seconds for waist region
+    CROP_PADDING: int = 50  # Padding for crop area to include more details
+    OBJECT_PROXIMITY_THRESHOLD: int = 50  # Max distance to consider object proximity
 
     class Config:
         env_file = ".env"
-        case_sensitive = True
 
 settings = Settings()

@@ -16,14 +16,13 @@ function Sidebar({ isSidebarExpanded, toggleSidebar }) {
 
   const SIDEBAR_LINKS = [
     { id: 1, path: '/', name: 'Dashboard', icon: MdOutlineDashboard },
-    { id: 2, path: '/multicamera', name: 'Multi-Camera', icon: PiCameraBold },
-    // { id: 3, path: '/Live-Feed', name: 'Live Feed', icon: PiCameraBold },
-    // { id: 4, path: '/datacollection', name: 'Data Collection', icon: PiClipboardTextBold },
-    // { id: 5, path: '/dailyreport', name: 'Daily Report', icon: PiChartBarBold },
-    { id: 6, path: '/alerts', name: 'Alerts', icon: PiBellBold },
-    { id: 7, path: '/suspectlist', name: 'Suspectlist', icon: PiCameraBold },
-    // { id: 8, path: '/System-Status', name: 'System Status', icon: MdSettings },
-    // { id: 9, path: '/BillingActivityPage', name: 'POS', icon: MdAttachMoney },
+    // { id: 2, path: '/Live-Feed', name: 'Live Feed', icon: PiCameraBold },
+    // { id: 3, path: '/datacollection', name: 'Data Collection', icon: PiClipboardTextBold },
+    // { id: 4, path: '/dailyreport', name: 'Daily Report', icon: PiChartBarBold },
+    { id: 5, path: '/alerts', name: 'Alerts', icon: PiBellBold },
+    { id: 5, path: '/suspectlist', name: 'Suspectlist', icon: PiCameraBold },
+    // { id: 6, path: '/System-Status', name: 'System Status', icon: MdSettings },
+    // { id: 6, path: '/BillingActivityPage', name: 'POS', icon: MdAttachMoney },
   ];
 
   // Mock user data
