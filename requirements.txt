@@ -1,0 +1,23 @@
+fastapi==0.95.1
+uvicorn==0.22.0
+python-multipart==0.0.6
+pydantic==1.10.7
+websockets==11.0.3
+
+# Database
+sqlalchemy==2.0.13
+psycopg2-binary==2.9.6
+alembic==1.10.4
+
+# Computer Vision
+opencv-python==4.7.0.72
+mediapipe==0.10.0
+torch==2.0.1
+torchvision==0.15.2
+numpy==1.24.3
+scipy==1.10.1
+
+# Utilities
+python-dotenv==1.0.0
+tenacity==8.2.2
+boto3==1.26.153

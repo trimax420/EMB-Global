@@ -1,50 +1,42 @@
-from pathlib import Path
+import os
 from typing import List
-from pydantic_settings import BaseSettings
+from pydantic import BaseSettings, PostgresDsn
 
 class Settings(BaseSettings):
-    # Base directories
-    BASE_DIR: Path = Path(__file__).resolve().parent.parent.parent
-    UPLOAD_DIR: Path = BASE_DIR / "uploads"
-    PROCESSED_DIR: Path = BASE_DIR / "processed"
-    FRAMES_DIR: Path = BASE_DIR / "frames"
-    ALERTS_DIR: Path = BASE_DIR / "alerts"
-    THUMBNAILS_DIR: Path = BASE_DIR / "thumbnails"
-    MODELS_DIR: Path = BASE_DIR / "models"
-    SCREENSHOTS_DIR: Path = BASE_DIR / "screenshots"  # New directory for theft screenshots
-
-    # Model paths
-    FACE_MODEL_PATH: Path = BASE_DIR / "models/yolov8n-face.pt"
-    POSE_MODEL_PATH: Path = BASE_DIR / "models/yolov8n-pose.pt"
-    OBJECT_MODEL_PATH: Path = BASE_DIR / "models/yolov5s.pt"
-    FACE_EXTRACTION_MODEL_PATH: Path = BASE_DIR / "models/yolov8n-face.pt"
-    LOITERING_MODEL_PATH: Path = BASE_DIR / "models/yolov5s.pt"
-    THEFT_MODEL_PATH: Path = BASE_DIR / "models/yolo11n-pose.pt"
-
-    # CORS settings
-    CORS_ORIGINS: List[str] = [
-        "http://localhost:3000",
-        "http://localhost:5173",
-        "http://127.0.0.1:3000",
-        "http://127.0.0.1:5173",
-    ]
-
-    # Video processing settings
-    MAX_WORKERS: int = 2
-    TARGET_PROCESSING_FPS: int = 15
-    DETECTION_THRESHOLD: float = 0.4
-    FRAME_BUFFER_SIZE: int = 32
-    UPDATE_INTERVAL: float = 0.1
-    STATS_UPDATE_INTERVAL: float = 2.0
+    API_V1_STR: str = "/api/v1"
+    PROJECT_NAME: str = "security-surveillance"
     
-    # Theft detection settings
-    SKIP_FRAMES: int = 3
-    HAND_STAY_TIME_CHEST: float = 1.0  # seconds before suspicion (chest region)
-    HAND_STAY_TIME_WAIST: float = 1.5  # seconds for waist region
-    CROP_PADDING: int = 50  # Padding for crop area to include more details
-    OBJECT_PROXIMITY_THRESHOLD: int = 50  # Max distance to consider object proximity
-
+    # CORS
+    CORS_ORIGINS: List[str] = ["http://localhost:3000", "http://localhost:5173"]
+    
+    # Database
+    POSTGRES_SERVER: str
+    POSTGRES_USER: str
+    POSTGRES_PASSWORD: str
+    POSTGRES_DB: str
+    SQLALCHEMY_DATABASE_URI: PostgresDsn = None
+    
+    # Security
+    SECRET_KEY: str
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 8  # 8 days
+    
+    # Video Processing
+    DETECTION_CONFIDENCE_THRESHOLD: float = 0.5
+    TRACKING_IOU_THRESHOLD: float = 0.3
+    ALERT_RETENTION_DAYS: int = 30
+    
+    # AWS S3 (for storing frames/clips)
+    AWS_ACCESS_KEY_ID: str = None
+    AWS_SECRET_ACCESS_KEY: str = None
+    AWS_STORAGE_BUCKET_NAME: str = None
+    
     class Config:
         env_file = ".env"
+        case_sensitive = True
+
+    def __init__(self, **data):
+        super().__init__(**data)
+        if self.POSTGRES_SERVER and self.POSTGRES_USER and self.POSTGRES_PASSWORD and self.POSTGRES_DB:
+            self.SQLALCHEMY_DATABASE_URI = f"postgresql://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}@{self.POSTGRES_SERVER}/{self.POSTGRES_DB}"
 
 settings = Settings()

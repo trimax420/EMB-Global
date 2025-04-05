@@ -1,86 +1,37 @@
-import uvicorn
-import logging
-import traceback
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-from app.api.routes import router as api_router
+from sqlalchemy.orm import Session
+
+from app.api.endpoints import detection, analytics, alerts, auth
+from app.core.database import get_db
 from app.core.config import settings
-from database import init_db
-from app.directory_initializer import ensure_app_directories
 
-# Set up logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+app = FastAPI(
+    title="Security Surveillance API",
+    description="API for real-time security surveillance and analytics",
+    version="0.1.0"
 )
-logger = logging.getLogger(__name__)
 
-def create_app():
-    app = FastAPI(
-        title="Security Dashboard API",
-        description="API for security monitoring, alerts and analytics",
-        version="1.0.0"
-    )
+# Configure CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.CORS_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-    # CORS settings - allow all for development
-    origins = [
-        "http://localhost:3000",
-        "http://localhost:5173",
-        "http://127.0.0.1:3000",
-        "http://127.0.0.1:5173",
-        "*",  # Allow all origins during development
-    ]
+# Include routers
+app.include_router(auth.router, prefix="/api/auth", tags=["authentication"])
+app.include_router(detection.router, prefix="/api/detection", tags=["detection"])
+app.include_router(analytics.router, prefix="/api/analytics", tags=["analytics"])
+app.include_router(alerts.router, prefix="/api/alerts", tags=["alerts"])
 
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=origins,
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
-    
-    # Add exception handler for better error responses
-    @app.exception_handler(Exception)
-    async def general_exception_handler(request: Request, exc: Exception):
-        error_detail = f"{exc.__class__.__name__}: {str(exc)}"
-        logger.error(f"Unhandled exception: {error_detail}")
-        logger.error(traceback.format_exc())
-        return JSONResponse(
-            status_code=500,
-            content={
-                "error": "Internal Server Error",
-                "detail": error_detail,
-                "path": str(request.url)
-            }
-        )
+@app.get("/")
+def read_root():
+    return {"message": "Security Surveillance API"}
 
-    # Include API router
-    app.include_router(api_router, prefix="/api")
-
-    return app
-
-app = create_app()
-
-@app.on_event("startup")
-async def startup_event():
-    try:
-        logger.info("Ensuring application directories exist...")
-        ensure_app_directories(settings)  # Pass the settings object as an argument
-        
-        logger.info("Initializing database...")
-        await init_db()
-        logger.info("Database initialized successfully")
-    except Exception as e:
-        logger.error(f"Error during startup: {str(e)}")
-        # Print the full traceback
-        logger.error(traceback.format_exc())
-        raise
-
-if __name__ == "__main__":
-    uvicorn.run(
-        "main:app",
-        host="0.0.0.0",
-        port=8000,
-        reload=True
-    ) 
+@app.get("/health")
+def health_check(db: Session = Depends(get_db)):
+    # Basic health check to ensure DB connection is working
+    return {"status": "healthy", "database": "connected"}
